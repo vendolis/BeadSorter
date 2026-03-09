@@ -41,8 +41,8 @@
 
 #define nullScanOffset 150
 
-#define servoAngleIn 28 //Servo
-#define servoAngleOut 51
+#define servoAngleIn 36 //Servo
+#define servoAngleOut 60
 #define servoAngleWiggle 2
 #define servoPin 8
 
@@ -133,11 +133,13 @@ void setup() {
     bool debugRequested = false;
     while (millis() - t < 2000) {
       if (digitalRead(setupPin) == HIGH) {
+        Serial.println(F("[Debug] Setup Button registered."));
         debugRequested = true;
         break;
       }
     }
     if (debugRequested) {
+      Serial.println(F("[Debug] Entering Debug mode."));
       runInteractiveDebug(); // never returns
       while (1);
     }
