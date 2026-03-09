@@ -76,7 +76,10 @@ uint8_t  autoColorCounter = 0;
 uint16_t beadCounter = 0;
 
 const int dynamicContainerArraySize = 16;
-int dynamicContainerArray[dynamicContainerArraySize] = { -1, 666, -1, -1, -1, 666, -1, -1, -1, 666, -1, -1, -1, 666 , -1 , -1};
+// -1 means empty, 666 means blocked (there are only 12 total slots available due to the layout.)
+// When starting the program, the arm should be over the middle slot of one of the three on the sides.
+// The Unknown color slot (15) will then be the slot to the right of it.
+int dynamicContainerArray[dynamicContainerArraySize] = { -1, -1, 666, -1, -1, -1, 666, -1, -1, -1, 666, -1, -1, -1, 666 , -1 }; 
 
 void setup() {
   Serial.begin(9600);
