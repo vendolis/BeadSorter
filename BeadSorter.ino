@@ -22,7 +22,7 @@
 
 //#define stepperMulti 100 //Stepper
 #define stepperStepsPerRot 200
-#define stepperMicroStepping 16
+#define stepperMicroStepping 8
 #define numContainerSlots 16    // in reality there are only 12, but
 #define stepperMulti (stepperStepsPerRot*stepperMicroStepping/numContainerSlots)
 
@@ -107,12 +107,14 @@ void setup() {
   stepper.setCurrentPosition(0);
 
 #if defined DEBUG_PROG && DEBUG_PROG == 1
-  // Full 360 turn
+  // Full 360 turn, then return to home
   Serial.println(F("[DEBUG] Stepper: full 360 turn..."));
   stepper.moveTo(stepperStepsPerRot * stepperMicroStepping);
   stepper.runToPosition();
   delay(500);
-  stepper.setCurrentPosition(0);
+  stepper.moveTo(0);
+  stepper.runToPosition();
+  delay(500);
 
   // Visit each output slot once
   Serial.println(F("[DEBUG] Stepper: cycling all output slots..."));
@@ -122,6 +124,11 @@ void setup() {
     stepper.runToPosition();
     delay(500);
   }
+
+  // Return to slot 0
+  Serial.println(F("[DEBUG] Returning to slot 0..."));
+  stepper.moveTo(0);
+  stepper.runToPosition();
   Serial.println(F("[DEBUG] Stepper test complete."));
   while (1);
 #endif
@@ -891,13 +898,20 @@ void debugStep3_Stepper() {
     stepper.setCurrentPosition(0);
     bool interrupted = false;
 
-    // Full 360 turn
+    // Full 360 turn, then return to home
     Serial.println(F("  Starting full 360 turn..."));
     if (!runStepperTo(stepperStepsPerRot * stepperMicroStepping)) {
       interrupted = true;
     } else {
       delay(500);
-      stepper.setCurrentPosition(0);
+      Serial.println(F("  Returning to slot 0..."));
+      if (!runStepperTo(0)) {
+        interrupted = true;
+      }
+    }
+
+    if (!interrupted) {
+      delay(500);
       Serial.println(F("  360 turn done. Starting slot cycle..."));
 
       for (int slot = 0; slot < numContainerSlots && !interrupted; slot++) {
@@ -917,6 +931,13 @@ void debugStep3_Stepper() {
           Serial.println(F("  Returning to Hopper Motor test..."));
           return;
         }
+      }
+
+      // Return to slot 0 after visiting all slots
+      if (!interrupted) {
+        Serial.println(F("  Slot cycle done. Returning to slot 0..."));
+        runStepperTo(0);
+        delay(500);
       }
     }
 
