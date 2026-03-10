@@ -41,6 +41,9 @@
 
 #define nullScanOffset 150
 
+// Number of sortable color slots (bin 15 is reserved for unrecognised beads when full)
+#define autoSortMaxColors 11
+
 #define servoAngleIn 37 //Servo
 #define servoAngleOut 61
 #define servoAngleWiggle 2
@@ -635,7 +638,7 @@ void sortBeadToDynamicArray() {
 
     if (autoSort) {
       Serial.println(F("autosort!"));
-      if (!allContainerFull()) {
+      if (!allContainerFull() && autoColorCounter < autoSortMaxColors) {
         Serial.print(F("not allContainerFull. StoreColor "));
         Serial.println(autoColorCounter);
         storeColor(autoColorCounter, resultColor[0], resultColor[1], resultColor[2], resultColor[3]);
@@ -643,6 +646,7 @@ void sortBeadToDynamicArray() {
         autoColorCounter++;
         moveSorterToPosition(containerNo);
       } else {
+        Serial.println(F("All sort slots full -> dumping to bin 15."));
         moveSorterToPosition(dynamicContainerArraySize - 1);
       }
     } else {
