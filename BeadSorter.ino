@@ -732,12 +732,12 @@ void startHopperMotor(bool dir) {
 // =============================================================================
 // INTERACTIVE DEBUG MODE
 // Activated by holding the setup button during the 2s boot window.
-// Cycles through three test steps; navigate with single/double press.
+// Cycles through three test steps; triple press enters Calibration Mode.
 // =============================================================================
 
 /*
  * Block until the button is pressed and released.
- * Returns 1 for a single press, 2 if a second press follows within 500ms.
+ * Returns 1 for single, 2 for double, 3 for triple press (each within 500ms).
  */
 int waitForButtonPress() {
   while (digitalRead(setupPin) == LOW) {}   // wait for press
@@ -751,6 +751,16 @@ int waitForButtonPress() {
       delay(50);
       while (digitalRead(setupPin) == HIGH) {}
       delay(50);
+      // Check for a third press within 500ms
+      unsigned long t2 = millis();
+      while (millis() - t2 < 500) {
+        if (digitalRead(setupPin) == HIGH) {
+          delay(50);
+          while (digitalRead(setupPin) == HIGH) {}
+          delay(50);
+          return 3;
+        }
+      }
       return 2;
     }
   }
@@ -759,7 +769,7 @@ int waitForButtonPress() {
 
 /*
  * Poll for a button press during a timeoutMs window.
- * Returns 0=none, 1=single press, 2=double press (second press within 500ms).
+ * Returns 0=none, 1=single, 2=double, 3=triple press (each within 500ms).
  */
 int checkButton(unsigned long timeoutMs) {
   unsigned long start = millis();
@@ -774,6 +784,15 @@ int checkButton(unsigned long timeoutMs) {
           delay(50);
           while (digitalRead(setupPin) == HIGH) {}
           delay(50);
+          unsigned long t2 = millis();
+          while (millis() - t2 < 500) {
+            if (digitalRead(setupPin) == HIGH) {
+              delay(50);
+              while (digitalRead(setupPin) == HIGH) {}
+              delay(50);
+              return 3;
+            }
+          }
           return 2;
         }
       }
@@ -808,13 +827,15 @@ bool runStepperTo(long position) {
 // DEBUG STEP 1 — Hopper Motor
 // Single press : switch direction
 // Double press : advance to step 2
+// Triple press : enter Calibration Mode
 // -----------------------------------------------------------------------------
-void debugStep1_Hopper() {
+int debugStep1_Hopper() {
   Serial.println();
   Serial.println(F("--- [DEBUG 1/3] Hopper Motor Test ---"));
   Serial.println(F("  Motor running FORWARD."));
   Serial.println(F("  Single press : switch direction"));
   Serial.println(F("  Double press : next test (Servo / Color Sensor)"));
+  Serial.println(F("  Triple press : Calibration Mode"));
 
   bool dir = false;
   startHopperMotor(dir);
@@ -826,10 +847,14 @@ void debugStep1_Hopper() {
       startHopperMotor(dir);
       Serial.print(F("  Direction switched -> "));
       Serial.println(dir ? F("REVERSE") : F("FORWARD"));
+    } else if (btn == 3) {
+      stopHopperMotor();
+      Serial.println(F("  Motor stopped. Entering Calibration Mode..."));
+      return 4;
     } else {
       stopHopperMotor();
       Serial.println(F("  Motor stopped. Advancing to next test..."));
-      return;
+      return 2;
     }
   }
 }
@@ -840,8 +865,9 @@ void debugStep1_Hopper() {
 // Single press (during/after cycle) : stop at end of current cycle
 // Single press (when stopped)       : restart loop
 // Double press                      : advance to step 3
+// Triple press                      : enter Calibration Mode
 // -----------------------------------------------------------------------------
-void debugStep2_ServoColor() {
+int debugStep2_ServoColor() {
   Serial.println();
   Serial.println(F("--- [DEBUG 2/3] Servo / Color Sensor Test ---"));
 
@@ -849,13 +875,14 @@ void debugStep2_ServoColor() {
     Serial.println(F("  ERROR: TCS34725 not found! Cannot run this test."));
     Serial.println(F("  Press button (any) to advance to next test."));
     waitForButtonPress();
-    return;
+    return 3;
   }
 
   Serial.println(F("  Loop running continuously. Results printed each cycle."));
   Serial.println(F("  Single press : stop after current cycle"));
   Serial.println(F("  Double press : next test (Stepper)"));
-  Serial.println(F("  (when stopped) Single press : restart | Double press : next test"));
+  Serial.println(F("  Triple press : Calibration Mode"));
+  Serial.println(F("  (when stopped) Single press : restart | Double press : next test | Triple press : Calibration Mode"));
 
   bool running = true;
 
@@ -880,10 +907,13 @@ void debugStep2_ServoColor() {
       int btn = checkButton(300);
       if (btn == 1) {
         running = false;
-        Serial.println(F("  Loop stopped. Single press=restart | Double press=next test."));
+        Serial.println(F("  Loop stopped. Single=restart | Double=next test | Triple=Calib Mode."));
+      } else if (btn == 3) {
+        Serial.println(F("  Entering Calibration Mode..."));
+        return 4;
       } else if (btn == 2) {
         Serial.println(F("  Advancing to Stepper test..."));
-        return;
+        return 3;
       }
     } else {
       // Paused — wait for explicit user action
@@ -891,9 +921,12 @@ void debugStep2_ServoColor() {
       if (btn == 1) {
         running = true;
         Serial.println(F("  Loop restarted."));
+      } else if (btn == 3) {
+        Serial.println(F("  Entering Calibration Mode..."));
+        return 4;
       } else {
         Serial.println(F("  Advancing to Stepper test..."));
-        return;
+        return 3;
       }
     }
   }
@@ -905,14 +938,15 @@ void debugStep2_ServoColor() {
 // Single press (during move)  : stop, decelerate to rest
 // Single press (when stopped) : save current position as 0, restart cycle
 // Double press                : back to step 1
-// Double press (slot pause)   : back to step 1
+// Triple press                : enter Calibration Mode
 // -----------------------------------------------------------------------------
-void debugStep3_Stepper() {
+int debugStep3_Stepper() {
   Serial.println();
   Serial.println(F("--- [DEBUG 3/3] Stepper Test ---"));
   Serial.println(F("  Single press during move       : stop"));
   Serial.println(F("  Single press when stopped      : save position as 0, restart cycle"));
   Serial.println(F("  Double press (any time)        : back to Hopper Motor test"));
+  Serial.println(F("  Triple press (any time)        : Calibration Mode"));
 
   while (true) {
     stepper.setCurrentPosition(0);
@@ -947,9 +981,12 @@ void debugStep3_Stepper() {
         int btn = checkButton(500);
         if (btn == 1) {
           interrupted = true;
+        } else if (btn == 3) {
+          Serial.println(F("  Entering Calibration Mode..."));
+          return 4;
         } else if (btn == 2) {
           Serial.println(F("  Returning to Hopper Motor test..."));
-          return;
+          return 1;
         }
       }
 
@@ -965,35 +1002,120 @@ void debugStep3_Stepper() {
       Serial.println(F("  Movement stopped."));
       Serial.println(F("  Single press : save position as 0, restart cycle"));
       Serial.println(F("  Double press : back to Hopper Motor test"));
+      Serial.println(F("  Triple press : Calibration Mode"));
       int btn = waitForButtonPress();
       if (btn == 1) {
         stepper.setCurrentPosition(0);
         Serial.println(F("  Position saved as 0. Restarting cycle..."));
         // continue while(true) -> restart
+      } else if (btn == 3) {
+        Serial.println(F("  Entering Calibration Mode..."));
+        return 4;
       } else {
         Serial.println(F("  Returning to Hopper Motor test..."));
-        return;
+        return 1;
       }
     } else {
       // Full cycle completed normally
       Serial.println(F("  Slot cycle complete!"));
-      Serial.println(F("  Single press : restart from 0 | Double press : back to Hopper Motor test"));
+      Serial.println(F("  Single press : restart from 0 | Double press : back to Hopper Motor test | Triple press : Calibration Mode"));
       int btn = waitForButtonPress();
       if (btn == 1) {
         Serial.println(F("  Restarting cycle..."));
         // continue while(true) -> restart
+      } else if (btn == 3) {
+        Serial.println(F("  Entering Calibration Mode..."));
+        return 4;
       } else {
         Serial.println(F("  Returning to Hopper Motor test..."));
-        return;
+        return 1;
       }
     }
+  }
+}
+
+// =============================================================================
+// CALIBRATION MODE
+// Entered from debug mode via triple press, or (future) directly at boot.
+// Double press : advance to next calibration step
+// Triple press : exit back to Debug Mode
+// =============================================================================
+
+/*
+ * Calibration step 1 — Servo positions.
+ * Servo moves to Out on entry. Toggle with single press to verify angles.
+ * Returns the next calibration step number, or -1 to exit calibration mode.
+ */
+int calibStep1_Servo() {
+  Serial.println();
+  Serial.println(F("--- [CALIB 1] Servo Calibration ---"));
+  Serial.println(F("  Servo -> OUT position."));
+  Serial.println(F("  Single press : toggle Out / In"));
+  Serial.println(F("  Double press : next calibration step"));
+  Serial.println(F("  Triple press : back to Debug Mode"));
+
+  bool posOut = true;
+  servo.write(servoAngleOut);
+  Serial.print(F("  Servo -> OUT (angle ")); Serial.print(servoAngleOut); Serial.println(')');
+
+  while (true) {
+    int btn = waitForButtonPress();
+    if (btn == 1) {
+      posOut = !posOut;
+      if (posOut) {
+        servo.write(servoAngleOut);
+        Serial.print(F("  Servo -> OUT (angle "));
+        Serial.print(servoAngleOut);
+        Serial.println(')');
+      } else {
+        servo.write(servoAngleIn);
+        Serial.print(F("  Servo -> IN  (angle "));
+        Serial.print(servoAngleIn);
+        Serial.println(')');
+      }
+    } else if (btn == 2) {
+      return 2;   // advance to next calibration step
+    } else {      // triple press
+      return -1;  // exit calibration mode
+    }
+  }
+}
+
+/*
+ * Calibration mode entry point.
+ * Runs calibration steps in sequence; returns when triple press exits to debug.
+ */
+void runCalibrationMode() {
+  Serial.println();
+  Serial.println(F("*************************************"));
+  Serial.println(F("*       CALIBRATION MODE            *"));
+  Serial.println(F("*  Single press : action            *"));
+  Serial.println(F("*  Double press : next calib step   *"));
+  Serial.println(F("*  Triple press : back to Debug     *"));
+  Serial.println(F("*************************************"));
+
+  int step = 1;
+  while (true) {
+    int next;
+    switch (step) {
+      case 1: next = calibStep1_Servo(); break;
+      default: next = -1; break;
+    }
+    if (next == -1) {
+      Serial.println(F("  Exiting Calibration Mode -> back to Debug Mode."));
+      return;
+    }
+    // No further calibration steps defined yet — wrap back to step 1
+    Serial.println(F("  No further calibration steps. Returning to step 1."));
+    step = 1;
   }
 }
 
 // -----------------------------------------------------------------------------
 // ENTRY POINT — called from setup() when button is held at boot.
 // Cycles: Hopper (1) -> Servo/Color (2) -> Stepper (3) -> Hopper (1) ...
-// Each step returns when the user double-presses to advance.
+// Triple press from any step enters Calibration Mode; returns to step 1 after.
+// Each step function returns the next step number.
 // This function never returns; program halts in debug mode.
 // -----------------------------------------------------------------------------
 void runInteractiveDebug() {
@@ -1006,14 +1128,16 @@ void runInteractiveDebug() {
   Serial.println(F("*    INTERACTIVE DEBUG MODE         *"));
   Serial.println(F("*  Single press : action in test    *"));
   Serial.println(F("*  Double press : next / prev test  *"));
+  Serial.println(F("*  Triple press : Calibration Mode  *"));
   Serial.println(F("*************************************"));
 
   int step = 1;
   while (true) {
     switch (step) {
-      case 1: debugStep1_Hopper();     step = 2; break;
-      case 2: debugStep2_ServoColor(); step = 3; break;
-      case 3: debugStep3_Stepper();    step = 1; break;
+      case 1: step = debugStep1_Hopper();     break;
+      case 2: step = debugStep2_ServoColor(); break;
+      case 3: step = debugStep3_Stepper();    break;
+      case 4: runCalibrationMode(); step = 1; break;
     }
   }
 }
