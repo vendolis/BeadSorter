@@ -41,7 +41,7 @@
 
 #define nullScanOffset 150
 
-#define servoAngleIn 36 //Servo
+#define servoAngleIn 32 //Servo
 #define servoAngleOut 60
 #define servoAngleWiggle 2
 #define servoPin 8
@@ -170,7 +170,9 @@ void setup() {
   while (1)
   {
     servoFeedIn();
+    delay(500);
     servoWiggleIn();
+    delay(200);
     readColorSensor();
     Serial.print(F("Clear:")); Serial.print(resultColor[0]);
     Serial.print(F("\tRed:"));   Serial.print(resultColor[1]);
@@ -234,6 +236,9 @@ void loop() {
   }
 
   servoFeedIn();
+  delay(500);
+  servoWiggleIn();
+  delay(200);
   readColorSensor();
 
   if (!nullScan()) {
@@ -377,6 +382,9 @@ void addColor() {
   for (int i = 0; i < 4; i++) {
     Serial.print(i + 1); Serial.print(F("/4: "));
     servoFeedIn();
+    delay(500);
+    servoWiggleIn();
+    delay(200);
     readColorSensor();
     addColorToMedianColors(i);
     servoFeedOut();
@@ -853,8 +861,15 @@ void debugStep2_ServoColor() {
 
   while (true) {
     if (running) {
+      Serial.print(F("[Servo] FeedOut"));
       servoFeedOut();
+      delay(500);
+      Serial.print(F("[Servo] FeedIn"));
       servoFeedIn();
+      delay(500);
+      Serial.print(F("[Servo] WiggleIn"));
+      servoWiggleIn();
+      delay(500);
       readColorSensor();
       Serial.print(F("  C:")); Serial.print(resultColor[0]);
       Serial.print(F("  R:")); Serial.print(resultColor[1]);
