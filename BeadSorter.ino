@@ -1043,35 +1043,39 @@ int debugStep3_Stepper() {
 
 /*
  * Calibration step 1 — Servo positions.
- * Servo moves to Out on entry. Toggle with single press to verify angles.
+ * Cycles Out -> In -> WiggleIn -> Out -> ... with each single press.
  * Returns the next calibration step number, or -1 to exit calibration mode.
  */
 int calibStep1_Servo() {
   Serial.println();
   Serial.println(F("--- [CALIB 1] Servo Calibration ---"));
-  Serial.println(F("  Servo -> OUT position."));
-  Serial.println(F("  Single press : toggle Out / In"));
+  Serial.println(F("  Single press : Out -> In -> WiggleIn -> Out -> ..."));
   Serial.println(F("  Double press : next calibration step"));
   Serial.println(F("  Triple press : back to Debug Mode"));
 
-  bool posOut = true;
+  // state 0=Out, 1=In, 2=WiggleIn
+  int state = 0;
   servo.write(servoAngleOut);
   Serial.print(F("  Servo -> OUT (angle ")); Serial.print(servoAngleOut); Serial.println(')');
 
   while (true) {
     int btn = waitForButtonPress();
     if (btn == 1) {
-      posOut = !posOut;
-      if (posOut) {
+      state = (state + 1) % 3;
+      if (state == 0) {
         servo.write(servoAngleOut);
         Serial.print(F("  Servo -> OUT (angle "));
         Serial.print(servoAngleOut);
         Serial.println(')');
-      } else {
+      } else if (state == 1) {
         servo.write(servoAngleIn);
         Serial.print(F("  Servo -> IN  (angle "));
         Serial.print(servoAngleIn);
         Serial.println(')');
+      } else {
+        Serial.println(F("  Servo -> WiggleIn"));
+        servoWiggleIn();
+        Serial.println(F("  WiggleIn done."));
       }
     } else if (btn == 2) {
       return 2;   // advance to next calibration step
