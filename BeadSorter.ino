@@ -41,8 +41,8 @@
 
 #define nullScanOffset 150
 
-#define servoAngleIn 32 //Servo
-#define servoAngleOut 60
+#define servoAngleIn 37 //Servo
+#define servoAngleOut 61
 #define servoAngleWiggle 2
 #define servoPin 8
 
