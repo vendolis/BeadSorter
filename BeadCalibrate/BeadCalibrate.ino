@@ -39,6 +39,7 @@
 
 #include <Arduino.h>
 #include <Servo.h>
+#include <AccelStepper.h>
 #include <Wire.h>
 #include <Adafruit_TCS34725.h>
 
@@ -82,6 +83,20 @@ static void rgbToHsl(float r, float g, float b, double &h, double &s, double &l)
 #define servoAngleWiggle    2
 #define servoPin            8
 
+// ── Stepper constants (identical to BeadSorter.ino) ──────────────────────────
+#define dirPin              2
+#define stepPin             3
+#define motorInterfaceType  1
+#define stepperMaxSpeed     6000
+#define stepperAccel        9000
+#define stepperStepsPerRot  200
+#define stepperMicroStepping 8
+#define numContainerSlots   16
+#define stepperMulti        (stepperStepsPerRot * stepperMicroStepping / numContainerSlots)
+
+// Slot where all calibration beads (including rejects) are deposited.
+#define REJECT_SLOT         1
+
 // ── Calibration parameters ────────────────────────────────────────────────────
 
 // Wiggle positions taken per bead.  At each position all four gains are read
@@ -122,10 +137,12 @@ static const float NULL_OFFSET_L = 0.05f;
 // ── Hardware objects ──────────────────────────────────────────────────────────
 Adafruit_TCS34725 tcs = Adafruit_TCS34725(CALIB_INTTIME, GAINS[NULL_SCAN_GAIN_IDX].gain);
 Servo servo;
+AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
 
 // ── Global state ──────────────────────────────────────────────────────────────
 float    nullScanHSL[3] = {0.0f, 0.0f, 0.0f};
 int      beadId         = 0;
+int      rejectId       = 0;
 
 // Current sensor snapshot — filled by readAllSensorData().
 uint16_t rawR, rawG, rawB, rawC;
@@ -182,6 +199,21 @@ void printCSVRow(int bead, const char* gainLabel, int sampleNo) {
   Serial.print(hue, 5);         Serial.print(',');
   Serial.print(satHSL, 5);      Serial.print(',');
   Serial.print(litHSL, 5);      Serial.println();
+}
+
+// ── Stepper (identical to BeadSorter.ino) ────────────────────────────────────
+void moveSorterToPosition(int position) {
+  int currentPos     = stepper.currentPosition() / stepperMulti;
+  int diffToPosition = position - currentPos;
+  if (diffToPosition > 8) {
+    position = currentPos + diffToPosition - 16;
+  } else if (diffToPosition < -8) {
+    position = currentPos + diffToPosition + 16;
+  }
+  position *= stepperMulti;
+  stepper.moveTo(position);
+  stepper.runToPosition();
+  stepper.setCurrentPosition(stepper.currentPosition() % (16 * stepperMulti));
 }
 
 // ── Servo (identical to BeadSorter.ino) ──────────────────────────────────────
@@ -281,6 +313,11 @@ void setup() {
   servo.attach(servoPin);
   servo.write(servoAngleIn);
 
+  stepper.setMaxSpeed(stepperMaxSpeed);
+  stepper.setAcceleration(stepperAccel);
+  stepper.setCurrentPosition(0);
+  moveSorterToPosition(REJECT_SLOT);  // start at the collection slot
+
   calibratePhotoSensor();
 
   if (!tcs.begin()) {
@@ -297,9 +334,9 @@ void setup() {
   nullScanHSL[0] = (float)hue;
   nullScanHSL[1] = (float)satHSL;
   nullScanHSL[2] = (float)litHSL;
-  Serial.print(F("  Null ref: H=")); Serial.print(nullScanHSL[0], 4);
-  Serial.print(F("  S="));          Serial.print(nullScanHSL[1], 4);
-  Serial.print(F("  L="));          Serial.println(nullScanHSL[2], 4);
+  Serial.print(F("# Null ref: H=")); Serial.print(nullScanHSL[0], 4);
+  Serial.print(F("  S="));           Serial.print(nullScanHSL[1], 4);
+  Serial.print(F("  L="));           Serial.println(nullScanHSL[2], 4);
   Serial.println(F("[INIT] Ready. Starting collection."));
   Serial.println();
 
@@ -309,6 +346,11 @@ void setup() {
                    "R_norm,G_norm,B_norm,"
                    "chroma_r,chroma_g,chroma_b,"
                    "H,S,L"));
+
+  // Null reference row (bead=0, gain=null_ref) — globals still hold the
+  // 16x reading taken above, so we can emit it directly.
+  Serial.println(F("# --- Null reference (16x, bead=0) ---"));
+  printCSVRow(0, "null_ref", 1);
 }
 
 // Sweep all gains at the current bead position and print one CSV row each.
@@ -352,16 +394,23 @@ void loop() {
 
     successfullBead = true;
   } else {
-    // ── Rejected by null scan — print values to compare against the ref ───────
-    Serial.print(F("# REJECTED  read: H="));  Serial.print((float)hue,    4);
-    Serial.print(F(" S="));                    Serial.print((float)satHSL, 4);
-    Serial.print(F(" L="));                    Serial.print((float)litHSL, 4);
-    Serial.print(F("  null ref: H="));         Serial.print(nullScanHSL[0], 4);
-    Serial.print(F(" S="));                    Serial.print(nullScanHSL[1], 4);
-    Serial.print(F(" L="));                    Serial.println(nullScanHSL[2], 4);
+    // ── Rejected by null scan — print comment + full gain sweep ───────────────
+    rejectId++;
+    Serial.print(F("# REJECTED ")); Serial.print(rejectId);
+    Serial.print(F("  read: H="));  Serial.print((float)hue,    4);
+    Serial.print(F(" S="));         Serial.print((float)satHSL, 4);
+    Serial.print(F(" L="));         Serial.print((float)litHSL, 4);
+    Serial.print(F("  null ref: H=")); Serial.print(nullScanHSL[0], 4);
+    Serial.print(F(" S="));            Serial.print(nullScanHSL[1], 4);
+    Serial.print(F(" L="));            Serial.println(nullScanHSL[2], 4);
+
+    // Full gain sweep for this reject (bead id is negative to distinguish in CSV).
+    sweepGains(-rejectId, 1);
+
     successfullBead = false;
   }
 
-  // Always release at end of cycle (mirrors BeadSorter.ino loop structure).
+  // Route all beads (and rejects) into the collection slot, then release.
+  moveSorterToPosition(REJECT_SLOT);
   servoFeedOut();
 }
