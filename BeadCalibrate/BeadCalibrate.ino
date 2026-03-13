@@ -77,38 +77,50 @@ static void rgbToHsl(float r, float g, float b, double &h, double &s, double &l)
 #define photoSensorPin      A0
 #define photoSensorThreshold       600
 #define photoSensorCalibMinDiff    100
-#define servoAngleIn        37
-#define servoAngleOut       61
+#define servoAngleIn        36
+#define servoAngleOut       62
 #define servoAngleWiggle    2
 #define servoPin            8
 
 // ── Calibration parameters ────────────────────────────────────────────────────
 
-// Readings taken per bead (wiggle between each to vary bead position).
+// Wiggle positions taken per bead.  At each position all four gains are read
+// before the next wiggle, so total rows per bead = NUM_READINGS × 4.
 static const int NUM_READINGS = 10;
 
-// Gain and integration time for this collection run.
-// To test another gain: change CALIB_GAIN and update GAIN_LABEL to match, then reflash.
-//   TCS34725_GAIN_1X  → "g1x"
-//   TCS34725_GAIN_4X  → "g4x"
-//   TCS34725_GAIN_16X → "g16x"   ← default (same as BeadSorter.ino)
-//   TCS34725_GAIN_60X → "g60x"
-// Integration time constants are uint8_t macros in this library (no typedef).
-static const tcs34725Gain_t CALIB_GAIN    = TCS34725_GAIN_16X;
-static const uint8_t        CALIB_INTTIME = TCS34725_INTEGRATIONTIME_101MS;
-static const char GAIN_LABEL[] = "g16x";  // ← update this when CALIB_GAIN changes
+// Integration time used for every gain step (uint8_t macro — no typedef in this lib).
+static const uint8_t CALIB_INTTIME = TCS34725_INTEGRATIONTIME_101MS;
+
+// Time to wait after setGain() before reading: must be > one integration period.
+static const unsigned long GAIN_SETTLE_MS = 220;
+
+// Gain sweep table — all four gains are measured at every wiggle position.
+struct GainRow { tcs34725Gain_t gain; const char* label; };
+static const GainRow GAINS[] = {
+  { TCS34725_GAIN_1X,  "g1x"  },
+  { TCS34725_GAIN_4X,  "g4x"  },
+  { TCS34725_GAIN_16X, "g16x" },
+  { TCS34725_GAIN_60X, "g60x" },
+};
+static const int NUM_GAINS = (int)(sizeof(GAINS) / sizeof(GAINS[0]));
+
+// Null scan uses 16x (index 2 in GAINS) — same gain used during setup calibration.
+static const int NULL_SCAN_GAIN_IDX = 2;
 
 // Saturation warning threshold (same 16-bit space as raw counts).
 static const uint16_t SAT_THRESH = 60000;
 
 // Null-scan tolerances: maximum HSL deviation from the empty-tube baseline
-// that still counts as "no bead".  Same defaults as BeadSorter.ino.
-static const float NULL_OFFSET_H = 0.07f;
-static const float NULL_OFFSET_S = 0.12f;
-static const float NULL_OFFSET_L = 0.12f;
+// that still counts as "no bead".
+// Deliberately tighter than BeadSorter.ino (0.07/0.12/0.12) so that beads
+// whose colours happen to sit near the empty-tube reference are NOT rejected.
+// Only lower these further if you still see false "empty" readings in the CSV.
+static const float NULL_OFFSET_H = 0.03f;
+static const float NULL_OFFSET_S = 0.05f;
+static const float NULL_OFFSET_L = 0.05f;
 
 // ── Hardware objects ──────────────────────────────────────────────────────────
-Adafruit_TCS34725 tcs = Adafruit_TCS34725(CALIB_INTTIME, CALIB_GAIN);
+Adafruit_TCS34725 tcs = Adafruit_TCS34725(CALIB_INTTIME, GAINS[NULL_SCAN_GAIN_IDX].gain);
 Servo servo;
 
 // ── Global state ──────────────────────────────────────────────────────────────
@@ -150,11 +162,11 @@ boolean nullScan() {
 }
 
 // ── CSV row output ────────────────────────────────────────────────────────────
-void printCSVRow(int bead, int sampleNo) {
+void printCSVRow(int bead, const char* gainLabel, int sampleNo) {
   bool sat = (rawR >= SAT_THRESH || rawG >= SAT_THRESH ||
               rawB >= SAT_THRESH || rawC >= SAT_THRESH);
   Serial.print(bead);           Serial.print(',');
-  Serial.print(GAIN_LABEL);     Serial.print(',');
+  Serial.print(gainLabel);      Serial.print(',');
   Serial.print(sampleNo);       Serial.print(',');
   Serial.print(rawR);           Serial.print(',');
   Serial.print(rawG);           Serial.print(',');
@@ -254,8 +266,9 @@ void calibratePhotoSensor() {
 void setup() {
   Serial.begin(115200);
   Serial.println(F("=== BeadSorter — Calibration Mode ==="));
-  Serial.print(F("  Gain: "));             Serial.println(GAIN_LABEL);
-  Serial.print(F("  Readings per bead: ")); Serial.println(NUM_READINGS);
+  Serial.print(F("  Gains: g1x g4x g16x g60x  x"));
+  Serial.print(NUM_READINGS);
+  Serial.println(F(" wiggle positions"));
   Serial.println();
 
   pinMode(GSM2,        OUTPUT);
@@ -298,39 +311,54 @@ void setup() {
                    "H,S,L"));
 }
 
+// Sweep all gains at the current bead position and print one CSV row each.
+void sweepGains(int bead, int position) {
+  for (int gi = 0; gi < NUM_GAINS; gi++) {
+    tcs.setGain(GAINS[gi].gain);
+    delay(GAIN_SETTLE_MS);
+    readAllSensorData();
+    printCSVRow(bead, GAINS[gi].label, position);
+  }
+  // Restore null-scan gain for next null-check.
+  tcs.setGain(GAINS[NULL_SCAN_GAIN_IDX].gain);
+  delay(GAIN_SETTLE_MS);
+}
+
 // ── Main loop ─────────────────────────────────────────────────────────────────
 void loop() {
   static bool successfullBead = false;
 
   handleHopperMotor(successfullBead);
 
-  // Feed bead into sensor position and take first reading.
+  // Feed bead into sensor position and take null-scan reading at 16x.
   servoFeedIn();
   delay(500);
   servoWiggleIn();
   delay(200);
-  readAllSensorData();
+  readAllSensorData();  // gain is already at GAINS[NULL_SCAN_GAIN_IDX] (16x)
 
   if (!nullScan()) {
-    // ── Bead detected ─────────────────────────────────────────────────────────
+    // ── Bead detected: sweep all gains at each wiggle position ────────────────
     beadId++;
     Serial.print(F("# --- Bead ")); Serial.print(beadId); Serial.println(F(" ---"));
 
-    // Reading 1 is already taken above.
-    printCSVRow(beadId, 1);
+    sweepGains(beadId, 1);  // position 1 — already seated from feed above
 
-    // Readings 2..NUM_READINGS: wiggle to vary position, then read.
-    for (int i = 2; i <= NUM_READINGS; i++) {
+    for (int pos = 2; pos <= NUM_READINGS; pos++) {
       servoWiggleIn();
       delay(200);
-      readAllSensorData();
-      printCSVRow(beadId, i);
+      sweepGains(beadId, pos);
     }
 
     successfullBead = true;
   } else {
-    // ── Empty tube / no bead ──────────────────────────────────────────────────
-    Serial.print('.');
+    // ── Rejected by null scan — print values to compare against the ref ───────
+    Serial.print(F("# REJECTED  read: H="));  Serial.print((float)hue,    4);
+    Serial.print(F(" S="));                    Serial.print((float)satHSL, 4);
+    Serial.print(F(" L="));                    Serial.print((float)litHSL, 4);
+    Serial.print(F("  null ref: H="));         Serial.print(nullScanHSL[0], 4);
+    Serial.print(F(" S="));                    Serial.print(nullScanHSL[1], 4);
+    Serial.print(F(" L="));                    Serial.println(nullScanHSL[2], 4);
     successfullBead = false;
   }
 
