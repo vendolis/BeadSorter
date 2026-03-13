@@ -44,8 +44,8 @@
 // Number of sortable color slots (bin 15 is reserved for unrecognised beads when full)
 #define autoSortMaxColors 11
 
-#define servoAngleIn 37 //Servo
-#define servoAngleOut 61
+#define servoAngleIn 36 //Servo
+#define servoAngleOut 62
 #define servoAngleWiggle 2
 #define servoPin 8
 
