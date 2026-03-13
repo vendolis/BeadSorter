@@ -3,6 +3,8 @@
 #include <AccelStepper.h>
 #include <Wire.h>
 #include <Adafruit_TCS34725.h>
+#include "ColorConverterLib.h"
+
 
 // Stubs so VS Code IntelliSense resolves AVR-specific macros.
 // These lines are never compiled by the Arduino toolchain.
@@ -30,7 +32,7 @@
 #define GSM2 5 // Container Motor
 #define in3 7 //Container Motor
 #define in4 6 //Container Motor
-#define hopperMotorReverseTime  9000 //in ms - time of ~ revolution
+#define hopperMotorReverseTime  3000 //in ms - time of ~ revolution
 
 #define setupPin 11 //Setup
 
@@ -38,8 +40,6 @@
 #define photoSensorPin A0 //Photo Sensor
 #define photoSensorThreshold 600
 #define photoSensorCalibMinDiff 100  // minimum on/off difference to consider LED functional
-
-#define nullScanOffset 150
 
 // Number of sortable color slots (bin 15 is reserved for unrecognised beads when full)
 #define autoSortMaxColors 11
@@ -59,21 +59,37 @@
 Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_101MS, TCS34725_GAIN_16X);
 //Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_101MS, TCS34725_GAIN_1X);
 
-//Max allowed color difference = thresholdFactor * colorValue + offset (0.08/40)
-//dark colors 0.02 + 10
-float thresholdFactor = 0.04;
-int offset = 40;
+// HSL matching thresholds — independent per channel.
+// All values are in the 0..1 range (the ColorConverterLib normalises H, S, L to 0..1).
+// H wraps around (0 == 1 == red), so the comparison uses circular distance.
+float thresholdH = 0.04;   // hue tolerance  (~14° in 360° notation)
+float thresholdS = 0.08;   // saturation tolerance
+float thresholdL = 0.08;   // lightness tolerance
+
+// Null-scan window: maximum deviation from empty-tube reference in each channel.
+float nullScanOffsetH = 0.07;
+float nullScanOffsetS = 0.12;
+float nullScanOffsetL = 0.12;
 
 Servo servo;
 AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
 
 bool autoSort = true;
-unsigned int resultColor[4] = {0, 0, 0, 0};
-unsigned int medianColors[4][4];
-unsigned int storedColors[16][4];
+float resultHSL[3] = {0.0, 0.0, 0.0};  // H:0-1, S:0-1, L:0-1
+
+float medianHSL[4][3];  // 4-sample accumulation buffer
+
+// storedColors[16][3] — H < 0 marks an empty slot
+float storedColors[16][3] = {
+  {-1,0,0},{-1,0,0},{-1,0,0},{-1,0,0},
+  {-1,0,0},{-1,0,0},{-1,0,0},{-1,0,0},
+  {-1,0,0},{-1,0,0},{-1,0,0},{-1,0,0},
+  {-1,0,0},{-1,0,0},{-1,0,0},{-1,0,0}
+};
 
 bool calibrateNullScan = true;
-int nullScanValues[4] = {6618, 1860, 2282, 2116}; //adjust these if no calibration
+// If calibrateNullScan=false, set these manually (H, S, L all 0..1).
+float nullScanHSL[3] = {0.0, 0.0, 0.0};
 
 uint8_t  autoColorCounter = 0;
 uint16_t beadCounter = 0;
@@ -82,7 +98,7 @@ const int dynamicContainerArraySize = 16;
 // -1 means empty, 666 means blocked (there are only 12 total slots available due to the layout.)
 // When starting the program, the arm should be over the middle slot of one of the three on the sides.
 // The Unknown color slot (15) will then be the slot to the right of it.
-int dynamicContainerArray[dynamicContainerArraySize] = { -1, -1, 666, -1, -1, -1, 666, -1, -1, -1, 666, -1, -1, -1, 666 , -1 }; 
+int dynamicContainerArray[dynamicContainerArraySize] = { -1, -1, 666, -1, -1, -1, 666, -1, -1, -1, 666, -1, -1, -1, 666 , -1 };
 
 void setup() {
   Serial.begin(9600);
@@ -177,10 +193,9 @@ void setup() {
     servoWiggleIn();
     delay(200);
     readColorSensor();
-    Serial.print(F("Clear:")); Serial.print(resultColor[0]);
-    Serial.print(F("\tRed:"));   Serial.print(resultColor[1]);
-    Serial.print(F("\tGreen:")); Serial.print(resultColor[2]);
-    Serial.print(F("\tBlue:"));  Serial.println(resultColor[3]);
+    Serial.print(F("H:")); Serial.print(resultHSL[0], 4);
+    Serial.print(F("\tS:")); Serial.print(resultHSL[1], 4);
+    Serial.print(F("\tL:")); Serial.println(resultHSL[2], 4);
     delay(800);
     servoFeedOut();
   }
@@ -231,10 +246,11 @@ void loop() {
 
   if (digitalRead(setupPin) == HIGH) {
     while (digitalRead(setupPin) == HIGH) {}
-    // for manual colors, there are more restricted thresholds
+    // for manual colors, use tighter thresholds
     autoSort = false;
-    thresholdFactor = 0.03;
-    offset = 20;
+    thresholdH = 0.025;
+    thresholdS = 0.05;
+    thresholdL = 0.05;
     addColor();
   }
 
@@ -247,10 +263,9 @@ void loop() {
   if (!nullScan()) {
     Serial.println();
     Serial.print(F("Beads analyzed: ")); Serial.println(beadCounter++);
-    Serial.print(F("\tClear:")); Serial.print(resultColor[0]);
-    Serial.print(F("\tRed:"));   Serial.print(resultColor[1]);
-    Serial.print(F("\tGreen:")); Serial.print(resultColor[2]);
-    Serial.print(F("\tBlue:"));  Serial.println(resultColor[3]);
+    Serial.print(F("\tH:")); Serial.print(resultHSL[0], 4);
+    Serial.print(F("\tS:")); Serial.print(resultHSL[1], 4);
+    Serial.print(F("\tL:")); Serial.println(resultHSL[2], 4);
     sortBeadToDynamicArray();
     successfullBead = true;
   } else {
@@ -265,17 +280,21 @@ void loop() {
 *   print all color tables to serial for debugging.
 */
 void printTables() {
-  char line[40];  // max formatted line is ~35 chars
+  char line[48];
 
-  Serial.println(F("Nullscan:"));
-  snprintf_P(line, sizeof(line), PSTR("%2d c=%5u r=%5u g=%5u b=%5u"),
-             0, nullScanValues[0], nullScanValues[1], nullScanValues[2], nullScanValues[3]);
+  Serial.println(F("Nullscan (H S L):"));
+  snprintf_P(line, sizeof(line), PSTR("%2d H=%.4f S=%.4f L=%.4f"),
+             0, nullScanHSL[0], nullScanHSL[1], nullScanHSL[2]);
   Serial.println(line);
 
-  Serial.println(F("Stored colors:"));
+  Serial.println(F("Stored colors (H S L):"));
   for (int i = 0; i < 16; i++) {
-    snprintf_P(line, sizeof(line), PSTR("%2d c=%5u r=%5u g=%5u b=%5u"),
-               i, storedColors[i][0], storedColors[i][1], storedColors[i][2], storedColors[i][3]);
+    if (storedColors[i][0] < 0) {
+      snprintf_P(line, sizeof(line), PSTR("%2d (empty)"), i);
+    } else {
+      snprintf_P(line, sizeof(line), PSTR("%2d H=%.4f S=%.4f L=%.4f"),
+                 i, storedColors[i][0], storedColors[i][1], storedColors[i][2]);
+    }
     Serial.println(line);
   }
 
@@ -435,156 +454,169 @@ void servoFeedOut() {
   delay(200);
 }
 
+/*
+ * Read the color sensor and store the result as HSL in resultHSL[].
+ * getRGB() normalises by the clear channel, making the reading
+ * largely independent of ambient light intensity.
+ * ColorConverter::RgbToHsl() returns H, S, L all in [0..1].
+ */
 void readColorSensor() {
-  // Sensor returns R G B and Clear value
-  uint16_t clearcol, red, green, blue;
-  delay(200); // Farbmessung dauert c. 50ms
-  tcs.getRawData(&red, &green, &blue, &clearcol);
-  resultColor[0] = (unsigned int)clearcol;
-  resultColor[1] = (unsigned int)red;
-  resultColor[2] = (unsigned int)green;
-  resultColor[3] = (unsigned int)blue;
+  float r, g, b;
+  delay(200);
+  tcs.getRGB(&r, &g, &b);  // returns 0..255 normalised by clear channel
+
+  double h, s, l;
+  ColorConverter::RgbToHsl(
+    (uint8_t)constrain((int)r, 0, 255),
+    (uint8_t)constrain((int)g, 0, 255),
+    (uint8_t)constrain((int)b, 0, 255),
+    h, s, l);
+
+  resultHSL[0] = (float)h;
+  resultHSL[1] = (float)s;
+  resultHSL[2] = (float)l;
 }
 
 void addColorToMedianColors(int noOfTest) {
-  medianColors[noOfTest][0] += resultColor[0];
-  medianColors[noOfTest][1] += resultColor[1];
-  medianColors[noOfTest][2] += resultColor[2];
-  medianColors[noOfTest][3] += resultColor[3];
+  medianHSL[noOfTest][0] = resultHSL[0];
+  medianHSL[noOfTest][1] = resultHSL[1];
+  medianHSL[noOfTest][2] = resultHSL[2];
 }
 
 int getNextFreeArrayPlace() {
   int arrayCounter = 0;
-  while (
-    (arrayCounter < 16) &&
-    (storedColors[arrayCounter][0] > 0) &&
-    (storedColors[arrayCounter][1] > 0) &&
-    (storedColors[arrayCounter][2] > 0) &&
-    (storedColors[arrayCounter][3] > 0)) {
+  while (arrayCounter < 16 && storedColors[arrayCounter][0] >= 0.0f) {
     arrayCounter++;
   }
   return arrayCounter;
 }
 
 void clearMedianColors() {
-  memset(medianColors, 0, sizeof(medianColors));
+  memset(medianHSL, 0, sizeof(medianHSL));
 }
 
-void calcMedianAndStore() { //  this is not a "median" this is a "mean"
-  for (int i = 0; i < 4; i++) {
-    long temp = 0;
-    for (int j = 0; j < 4; j++) {
-      temp += medianColors[j][i];
-    }
-    resultColor[i] = temp / 4;
+/*
+ * Compute the mean of the 4 accumulated HSL samples and store.
+ * Hue uses circular mean (via sin/cos) to handle the 0/1 wrap-around correctly.
+ * S and L use a simple arithmetic mean.
+ */
+void calcMedianAndStore() {
+  // Circular mean for hue (0..1 maps to 0..2π)
+  float sinSum = 0.0f, cosSum = 0.0f;
+  float sSum   = 0.0f, lSum   = 0.0f;
+  for (int j = 0; j < 4; j++) {
+    float rad = medianHSL[j][0] * 2.0f * (float)M_PI;
+    sinSum += sinf(rad);
+    cosSum += cosf(rad);
+    sSum   += medianHSL[j][1];
+    lSum   += medianHSL[j][2];
   }
+  float meanRad = atan2f(sinSum, cosSum);
+  if (meanRad < 0.0f) meanRad += 2.0f * (float)M_PI;
+  resultHSL[0] = meanRad / (2.0f * (float)M_PI);
+  resultHSL[1] = sSum / 4.0f;
+  resultHSL[2] = lSum / 4.0f;
 
   int nextColorNo = getNextFreeArrayPlace();
-  for (int i = 0; i < 4; i++) {
-    storedColors[nextColorNo][i] = resultColor[i];
-  }
+  storeColor(nextColorNo, resultHSL[0], resultHSL[1], resultHSL[2]);
 
-  Serial.print(F("Stored color to bank #")); Serial.println(nextColorNo);
+  Serial.print(F("Stored color to bank #")); Serial.print(nextColorNo);
+  Serial.print(F("  H=")); Serial.print(resultHSL[0], 4);
+  Serial.print(F("  S=")); Serial.print(resultHSL[1], 4);
+  Serial.print(F("  L=")); Serial.println(resultHSL[2], 4);
 }
 
+/*
+ * Default color set — placeholder only.
+ * The previous values were raw RGBC sensor counts that cannot be directly
+ * converted to the normalised HSL space used here.
+ * Re-register each color manually via the setup-button flow.
+ */
 void importDefaultColorSet() {
-  storeColor(0,  -1, 1032, 854,  766);  //Orange
-  storeColor(1,  -1, 1331, 1321, 918);  //Bright Yellow
-  storeColor(2,  -1, 532,  914,  797);  //Green
-  storeColor(3,  -1, 512,  845,  967);  //Dark Blue
-  storeColor(4,  -1, 1257, 1151, 1129); //Rose
-  storeColor(5,  -1, 1265, 1215, 1100); //Skin
-  storeColor(6,  -1, 756,  757,  721);  //Red
-  storeColor(7,  -1, 1525, 1858, 1735); //White
-  storeColor(8,  -1, 512,  742,  700);  //Black
-  storeColor(9,  -1, 939,  1462, 1101); //Lime Green
-  storeColor(10, -1, 712,  1298, 1121); //Mint Green
-  storeColor(11, -1, 1213, 975,  914);  //Coral
-  storeColor(12, -1, 1185, 1115, 876);  //Dark Yellow
+  Serial.println(F("[WARN] Default color set unavailable: raw RGBC values have been"));
+  Serial.println(F("       replaced by HSL. Re-register each color with the setup button."));
 }
 
 // Returns color name as a flash string pointer — no RAM allocation.
 const __FlashStringHelper* getColorNameFromNo(int colorNo) {
   switch (colorNo) {
-    case 0:  return F("Orange");
-    case 1:  return F("Bright Yellow");
-    case 2:  return F("Green");
-    case 3:  return F("Dark Blue");
-    case 4:  return F("Rose");
-    case 5:  return F("Skin");
-    case 6:  return F("Red");
-    case 7:  return F("White");
-    case 8:  return F("Black");
-    case 9:  return F("Lime Green");
-    case 10: return F("Mint Green");
-    case 11: return F("Coral");
-    case 12: return F("Dark Yellow");
+    case 0:  return F("Color 0");
+    case 1:  return F("Color 1");
+    case 2:  return F("Color 2");
+    case 3:  return F("Color 3");
+    case 4:  return F("Color 4");
+    case 5:  return F("Color 5");
+    case 6:  return F("Color 6");
+    case 7:  return F("Color 7");
+    case 8:  return F("Color 8");
+    case 9:  return F("Color 9");
+    case 10: return F("Color 10");
+    case 11: return F("Color 11");
+    case 12: return F("Color 12");
     default: return F("Unknown");
   }
 }
 
-void storeColor(int index, int Clear, int red, int green, int blue) {
-  storedColors[index][0] = Clear;
-  storedColors[index][1] = red;
-  storedColors[index][2] = green;
-  storedColors[index][3] = blue;
+void storeColor(int index, float h, float s, float l) {
+  storedColors[index][0] = h;
+  storedColors[index][1] = s;
+  storedColors[index][2] = l;
 }
 
-unsigned int colorDistance(unsigned int color1[], unsigned int color2[])
+/*
+ * Euclidean distance in HSL space.
+ * Hue difference uses the shorter arc on the circular hue axis.
+ */
+float colorDistanceHSL(float* c1, float* c2)
 {
-  long long sum = 0;
-  for (int i = 0; i < 4; i++) {
-    long long d = (long)color1[i] - (long)color2[i];
-    sum += d * d;
-  }
-  return (unsigned int)sqrt(sum);
+  float dh = fabsf(c1[0] - c2[0]);
+  if (dh > 0.5f) dh = 1.0f - dh;
+  float ds = c1[1] - c2[1];
+  float dl = c1[2] - c2[2];
+  return sqrtf(dh*dh + ds*ds + dl*dl);
 }
 
+/*
+ * Returns true when the sensor reading matches the empty-tube reference,
+ * indicating no bead is present.
+ */
 boolean nullScan() {
-  return (
-    (resultColor[0] > (nullScanValues[0] - nullScanOffset) && resultColor[0] < (nullScanValues[0] + nullScanOffset)) &&
-    (resultColor[1] > (nullScanValues[1] - nullScanOffset) && resultColor[1] < (nullScanValues[1] + nullScanOffset)) &&
-    (resultColor[2] > (nullScanValues[2] - nullScanOffset) && resultColor[2] < (nullScanValues[2] + nullScanOffset)) &&
-    (resultColor[3] > (nullScanValues[3] - nullScanOffset) && resultColor[3] < (nullScanValues[3] + nullScanOffset)));
+  float dh = fabsf(resultHSL[0] - nullScanHSL[0]);
+  if (dh > 0.5f) dh = 1.0f - dh;
+  return (dh                                         <= nullScanOffsetH) &&
+         (fabsf(resultHSL[1] - nullScanHSL[1])       <= nullScanOffsetS) &&
+         (fabsf(resultHSL[2] - nullScanHSL[2])       <= nullScanOffsetL);
 }
 
 void setNullScanValues() {
-  nullScanValues[0] = resultColor[0];
-  nullScanValues[1] = resultColor[1];
-  nullScanValues[2] = resultColor[2];
-  nullScanValues[3] = resultColor[3];
+  nullScanHSL[0] = resultHSL[0];
+  nullScanHSL[1] = resultHSL[1];
+  nullScanHSL[2] = resultHSL[2];
 
-  Serial.print(F("Calib results: "));
-  Serial.print(nullScanValues[0]); Serial.print(' ');
-  Serial.print(nullScanValues[1]); Serial.print(' ');
-  Serial.print(nullScanValues[2]); Serial.print(' ');
-  Serial.println(nullScanValues[3]);
+  Serial.print(F("Calib results H=")); Serial.print(nullScanHSL[0], 4);
+  Serial.print(F(" S="));             Serial.print(nullScanHSL[1], 4);
+  Serial.print(F(" L="));             Serial.println(nullScanHSL[2], 4);
 }
 
+/*
+ * Search storedColors for a slot whose HSL values are within the per-channel
+ * thresholds of resultHSL.  Hue comparison uses circular distance.
+ * Returns the matching index, or -1 if none found.
+ */
 int findColorInStorage()
 {
   for (int i = 0; i < 16; i++) {
-    int threshold  = thresholdFactor * resultColor[0] + offset;
-    int upperLimit = resultColor[0] + threshold;
-    int lowerLimit = resultColor[0] - threshold;
-    if (storedColors[i][0] >= lowerLimit && storedColors[i][0] <= upperLimit) {
-      threshold  = thresholdFactor * resultColor[1] + offset;
-      upperLimit = resultColor[1] + threshold;
-      lowerLimit = resultColor[1] - threshold;
-      if (storedColors[i][1] >= lowerLimit && storedColors[i][1] <= upperLimit) {
-        threshold  = thresholdFactor * resultColor[2] + offset;
-        upperLimit = resultColor[2] + threshold;
-        lowerLimit = resultColor[2] - threshold;
-        if (storedColors[i][2] >= lowerLimit && storedColors[i][2] <= upperLimit) {
-          threshold  = thresholdFactor * resultColor[3] + offset;
-          upperLimit = resultColor[3] + threshold;
-          lowerLimit = resultColor[3] - threshold;
-          if (storedColors[i][3] >= lowerLimit && storedColors[i][3] <= upperLimit) {
-            return i;
-          }
-        }
-      }
-    }
+    if (storedColors[i][0] < 0.0f) continue;  // empty slot
+
+    float dh = fabsf(resultHSL[0] - storedColors[i][0]);
+    if (dh > 0.5f) dh = 1.0f - dh;
+    if (dh > thresholdH) continue;
+
+    if (fabsf(resultHSL[1] - storedColors[i][1]) > thresholdS) continue;
+
+    if (fabsf(resultHSL[2] - storedColors[i][2]) > thresholdL) continue;
+
+    return i;
   }
   return -1;
 }
@@ -594,19 +626,23 @@ void sortBeadToDynamicArray() {
   Serial.println(F("Analyzing Results:"));
   clearMedianColors();
 
-  for (int retries = 0; retries < 4; retries++) {
+  // if we can still store new colors, do up to 4 retries to get a more stable reading for the new color.
+  // Otherwise just do one read and sort to best matching color or unknown.
+  int maxRetries = (!allContainerFull() && autoColorCounter < autoSortMaxColors) ? 4 : 1;
+
+  for (int retries = 0; retries < maxRetries; retries++) {
     int index = findColorInStorage();
     if (index != -1) {
-      Serial.print(F("Color is #")); Serial.println(storedColors[index][0]);
-      if (autoSort) {
-        Serial.print(F("Color is R:")); Serial.print(storedColors[index][1]);
-        Serial.print(F(" G:"));         Serial.print(storedColors[index][2]);
-        Serial.print(F(" B:"));         Serial.println(storedColors[index][3]);
-      } else {
-        Serial.print(F("Color is #")); Serial.print(getColorNameFromNo(index)); Serial.println(F("."));
+      Serial.print(F("Color match #")); Serial.print(index);
+      Serial.print(F("  H=")); Serial.print(storedColors[index][0], 4);
+      Serial.print(F("  S=")); Serial.print(storedColors[index][1], 4);
+      Serial.print(F("  L=")); Serial.println(storedColors[index][2], 4);
+
+      if (!autoSort) {
+        Serial.print(F("Color is ")); Serial.print(getColorNameFromNo(index)); Serial.println(F("."));
       }
 
-      Serial.print(F("Color Distance is: ")); Serial.println(colorDistance(storedColors[index], resultColor));
+      Serial.print(F("Color Distance: ")); Serial.println(colorDistanceHSL(storedColors[index], resultHSL), 4);
 
       int containerNo = getContainerNo(index);
       Serial.print(F("move stepper to container No:")); Serial.println(containerNo);
@@ -620,28 +656,31 @@ void sortBeadToDynamicArray() {
   }
 
   if (!found) {
-    char line[32];
-    // generate mean value of measurements for storage
-    for (int i = 0; i < 4; i++) {
-      long temp = 0;
-      for (int j = 0; j < 4; j++) {
-        temp += medianColors[j][i];
-        snprintf_P(line, sizeof(line), PSTR("i=%d,j=%d t=%ld m=%u"), i, j, temp, medianColors[j][i]);
-        Serial.println(line);
-      }
-      resultColor[i] = temp / 4;
-      snprintf_P(line, sizeof(line), PSTR("store=%u"), resultColor[i]);
-      Serial.println(line);
+    // Circular mean over all retry readings
+    float sinSum = 0.0f, cosSum = 0.0f, sSum = 0.0f, lSum = 0.0f;
+    for (int j = 0; j < 4; j++) {
+      float rad = medianHSL[j][0] * 2.0f * (float)M_PI;
+      sinSum += sinf(rad);
+      cosSum += cosf(rad);
+      sSum   += medianHSL[j][1];
+      lSum   += medianHSL[j][2];
     }
+    float meanRad = atan2f(sinSum, cosSum);
+    if (meanRad < 0.0f) meanRad += 2.0f * (float)M_PI;
+    resultHSL[0] = meanRad / (2.0f * (float)M_PI);
+    resultHSL[1] = sSum / 4.0f;
+    resultHSL[2] = lSum / 4.0f;
 
-    Serial.println(F("not found"));
+    Serial.print(F("not found. Avg H=")); Serial.print(resultHSL[0], 4);
+    Serial.print(F(" S=")); Serial.print(resultHSL[1], 4);
+    Serial.print(F(" L=")); Serial.println(resultHSL[2], 4);
 
     if (autoSort) {
       Serial.println(F("autosort!"));
       if (!allContainerFull() && autoColorCounter < autoSortMaxColors) {
         Serial.print(F("not allContainerFull. StoreColor "));
         Serial.println(autoColorCounter);
-        storeColor(autoColorCounter, resultColor[0], resultColor[1], resultColor[2], resultColor[3]);
+        storeColor(autoColorCounter, resultHSL[0], resultHSL[1], resultHSL[2]);
         int containerNo = getContainerNo(autoColorCounter);
         autoColorCounter++;
         moveSorterToPosition(containerNo);
@@ -865,7 +904,7 @@ int debugStep1_Hopper() {
 
 // -----------------------------------------------------------------------------
 // DEBUG STEP 2 — Servo / Color Sensor
-// Loop: servoFeedOut -> servoFeedIn -> readColorSensor -> print results
+// Loop: servoFeedOut -> servoFeedIn -> readColorSensor -> print HSL results
 // Single press (during/after cycle) : stop at end of current cycle
 // Single press (when stopped)       : restart loop
 // Double press                      : advance to step 3
@@ -902,10 +941,9 @@ int debugStep2_ServoColor() {
       servoWiggleIn();
       delay(500);
       readColorSensor();
-      Serial.print(F("  C:")); Serial.print(resultColor[0]);
-      Serial.print(F("  R:")); Serial.print(resultColor[1]);
-      Serial.print(F("  G:")); Serial.print(resultColor[2]);
-      Serial.print(F("  B:")); Serial.println(resultColor[3]);
+      Serial.print(F("  H:")); Serial.print(resultHSL[0], 4);
+      Serial.print(F("  S:")); Serial.print(resultHSL[1], 4);
+      Serial.print(F("  L:")); Serial.println(resultHSL[2], 4);
 
       // Brief window to catch a press at the end of each cycle
       int btn = checkButton(300);
