@@ -62,9 +62,9 @@ Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_101MS, TCS347
 // HSL matching thresholds — independent per channel.
 // All values are in the 0..1 range (the ColorConverterLib normalises H, S, L to 0..1).
 // H wraps around (0 == 1 == red), so the comparison uses circular distance.
-float thresholdH = 0.04;   // hue tolerance  (~14° in 360° notation)
-float thresholdS = 0.08;   // saturation tolerance
-float thresholdL = 0.08;   // lightness tolerance
+float thresholdH = 0.020;  // hue tolerance  (~7° in 360° notation)
+float thresholdS = 0.040;  // saturation tolerance
+float thresholdL = 0.040;  // lightness tolerance (low discriminating power for this bead set)
 
 // Null-scan window: maximum deviation from empty-tube reference in each channel.
 float nullScanOffsetH = 0.07;
@@ -248,9 +248,9 @@ void loop() {
     while (digitalRead(setupPin) == HIGH) {}
     // for manual colors, use tighter thresholds
     autoSort = false;
-    thresholdH = 0.025;
-    thresholdS = 0.05;
-    thresholdL = 0.05;
+    thresholdH = 0.012;
+    thresholdS = 0.025;
+    thresholdL = 0.025;
     addColor();
   }
 
