@@ -97,12 +97,13 @@ Adafruit_TCS34725 tcs = Adafruit_TCS34725(SENSOR_INTEGRATION_TIME, SENSOR_GAIN);
 // at this sensor resolution; they will merge into one bin.
 float thresholdH = 0.026;// 0.030;  // hue tolerance       (max spread 0.0255, bead 12)
 float thresholdS = 0.023;// 0.025;  // saturation tolerance (max spread 0.0224, bead 1)
-float thresholdL = 0.012;// 0.014;  // lightness tolerance  (max spread 0.0116, bead 1)
+float thresholdL = 0.010;// 0.014;  // lightness tolerance  (max spread 0.0116, bead 1)
 
 // Null-scan window: maximum deviation from empty-tube reference in each channel.
-float nullScanOffsetH = 0.07;
-float nullScanOffsetS = 0.12;
-float nullScanOffsetL = 0.12;
+float nullScanOffsetH = 0.004;
+float nullScanOffsetS = 0.006;
+float nullScanOffsetL = 0.004;
+float nullScanOffsetC = 150;
 
 Servo servo;
 AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
@@ -125,6 +126,7 @@ float storedColors[16][3] = {
 bool calibrateNullScan = true;
 // If calibrateNullScan=false, set these manually (H, S, L all 0..1).
 float nullScanHSL[3] = {0.0, 0.0, 0.0};
+uint16_t nullScanRAW[4] = {0.0, 0.0, 0.0};
 
 uint8_t  autoColorCounter = 0;
 uint16_t beadCounter = 0;
