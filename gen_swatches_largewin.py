@@ -1,16 +1,33 @@
 #!/usr/bin/env python3
 """
-Colour-swatch sheet for BeadCalibration_20260313_largerWindow.csv
+Colour-swatch sheet for a BeadCalibrate.ino serial-output CSV.
   • Null reference  (1 swatch)
   • Each accepted bead at g16x  (individual swatches, NormRGB colour)
   • Each individual reject  (individual swatches, colour from HSL)
+
+Usage:
+  python gen_swatches_largewin.py <input.csv> [output.png] [--gain GAIN]
+
+  <input.csv>   Raw serial-output CSV from BeadCalibrate.ino (required).
+                This file is used for both the data rows and the # comment
+                lines (null ref, rejects) — no separate clean CSV needed.
+  [output.png]  Output image path (default: bead_swatches_largewin.png).
+  [--gain GAIN] Gain to use for accepted-bead swatches (default: g16x).
 """
-import csv, re, math, collections, statistics
+import csv, re, math, collections, statistics, sys, argparse
 from PIL import Image, ImageDraw, ImageFont
 
-CSV_RAW   = "BeadCalibration_20260313_largerWindow.csv"
-CSV_CLEAN = "beads_largewin_clean.csv"
-GAIN      = "g16x"
+ap = argparse.ArgumentParser(description="Generate bead colour-swatch sheet.")
+ap.add_argument("csv_file", help="Raw BeadCalibrate.ino serial-output CSV")
+ap.add_argument("output",   nargs="?", default="bead_swatches_largewin.png",
+                help="Output PNG path (default: bead_swatches_largewin.png)")
+ap.add_argument("--gain",   default="g16x",
+                help="Gain label for accepted-bead swatches (default: g16x)")
+args = ap.parse_args()
+
+CSV_RAW   = args.csv_file
+CSV_CLEAN = args.csv_file   # raw file contains all data rows + comment lines
+GAIN      = args.gain
 
 # ── HSL → RGB (all values in 0-1 range, returns 0-255 tuple) ─────────────────
 def hsl_to_rgb255(h, s, l):
@@ -37,15 +54,34 @@ def text_colour(r, g, b):
     return (255, 255, 255) if luma(r, g, b) < 145 else (20, 20, 20)
 
 # ── Load accepted bead data (g16x) ───────────────────────────────────────────
+def _is_csv_line(line):
+    """Keep only the header row and numeric data rows; skip preamble/comments."""
+    s = line.lstrip()
+    if not s or s.startswith('#'):
+        return False
+    # Accept the CSV header line and rows whose first field is a number (or '-' for rejects)
+    return s.startswith('bead,') or s[0].isdigit() or s[0] == '-'
+
 rows = []
+null_ref_data = None   # full data row for null ref (bead=0, gain=null_ref)
 with open(CSV_CLEAN, newline="", encoding="utf-8") as fh:
-    clean = (l for l in fh if not l.lstrip().startswith("#"))
+    clean = (l for l in fh if _is_csv_line(l))
     for row in csv.DictReader(clean):
         try:
+            bead_id = int(row["bead"])
+            # Capture the null-ref data row for its RGB/chroma values
+            if bead_id == 0 and row["gain"].strip() == "null_ref" and null_ref_data is None:
+                null_ref_data = {
+                    "R": float(row["R_norm"]), "G": float(row["G_norm"]), "B": float(row["B_norm"]),
+                    "chR": float(row["chroma_r"]), "chG": float(row["chroma_g"]), "chB": float(row["chroma_b"]),
+                    "H": float(row["H"]), "S": float(row["S"]), "L": float(row["L"]),
+                }
+                continue
             if row["gain"].strip() != GAIN: continue
             if int(row["saturated"]): continue
+            if bead_id <= 0: continue   # skip reject rows (negative IDs)
             rows.append({
-                "bead":    int(row["bead"]),
+                "bead":    bead_id,
                 "R_norm":  float(row["R_norm"]),
                 "G_norm":  float(row["G_norm"]),
                 "B_norm":  float(row["B_norm"]),
@@ -161,7 +197,7 @@ def draw_cell(x0, y0, fill_rgb, line1, lines_below, border_col=(70,70,70), borde
 # ── Title ─────────────────────────────────────────────────────────────────────
 cy = MARGIN
 draw.text((MARGIN, cy),
-          "BeadSorter — LargerWindow calibration run   (gain g16x)",
+          f"BeadSorter — LargerWindow calibration run   (gain {GAIN})",
           fill=(20, 20, 20), font=F_TITLE)
 cy += TITLE_H
 
@@ -170,12 +206,20 @@ cy = section_bar(cy, "NULL REFERENCE  (empty-tube baseline)",
                  f"H={null_ref['H']:.4f}  S={null_ref['S']:.4f}  L={null_ref['L']:.4f}",
                  bg=(70, 70, 70))
 
-nr_rgb = hsl_to_rgb255(null_ref["H"], null_ref["S"], null_ref["L"])
-draw_cell(MARGIN, cy, nr_rgb,
+if null_ref_data:
+    nr8 = (clamp255(null_ref_data["R"]), clamp255(null_ref_data["G"]), clamp255(null_ref_data["B"]))
+    nr_chR, nr_chG = null_ref_data["chR"], null_ref_data["chG"]
+    nr_H, nr_S, nr_L = null_ref_data["H"], null_ref_data["S"], null_ref_data["L"]
+else:
+    nr8 = hsl_to_rgb255(null_ref["H"], null_ref["S"], null_ref["L"])
+    nr_chR = nr_chG = 0.0
+    nr_H, nr_S, nr_L = null_ref["H"], null_ref["S"], null_ref["L"]
+draw_cell(MARGIN, cy, nr8,
           "NULL REF",
-          [f"H={null_ref['H']:.4f}  S={null_ref['S']:.4f}",
-           f"L={null_ref['L']:.4f}",
-           f"RGB {nr_rgb[0]} {nr_rgb[1]} {nr_rgb[2]}",
+          [f"RGB {nr8[0]} {nr8[1]} {nr8[2]}",
+           f"H={nr_H:.4f}  S={nr_S:.4f}",
+           f"L={nr_L:.4f}",
+           f"chR={nr_chR:.4f}  chG={nr_chG:.4f}",
            "(empty tube)"],
           border_col=(180, 50, 50), border_w=2)
 cy += CELL_H + 14
@@ -223,18 +267,19 @@ for idx, rj in enumerate(rejects):
                  rj["dS"] < NULL_OFF[1] and
                  rj["dL"] < NULL_OFF[2])
     border = (200, 40, 40) if too_close else (70, 70, 70)
+    r8, g8, b8 = rgb
     draw_cell(x0, y0, rgb,
         f"Rej #{idx+1}",
-        [f"H={rj['H']:.4f}  S={rj['S']:.4f}",
+        [f"RGB {r8} {g8} {b8}",
+         f"H={rj['H']:.4f}  S={rj['S']:.4f}",
          f"L={rj['L']:.4f}",
-         f"\u0394H={rj['dH']:.4f}  \u0394S={rj['dS']:.4f}",
-         f"\u0394L={rj['dL']:.4f}",
+         f"\u0394H={rj['dH']:.4f}  \u0394S={rj['dS']:.4f}  \u0394L={rj['dL']:.4f}",
          "\u25c4 within null offsets" if too_close else "outside null offsets"],
         border_col=border, border_w=2)
 
 cy += rows_needed(n_rejects) * CELL_H + 14
 
-out = "bead_swatches_largewin.png"
+out = args.output
 img.save(out, dpi=(150, 150))
 print(f"Saved {out}  ({IMG_W}\u00d7{IMG_H} px)")
 print(f"  Null ref : H={null_ref['H']:.4f} S={null_ref['S']:.4f} L={null_ref['L']:.4f}")

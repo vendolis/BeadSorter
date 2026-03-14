@@ -208,15 +208,129 @@ Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_101MS,
 
 ---
 
+## Swatch image generators
+
+Three helper scripts produce visual colour-swatch sheets from calibration data.
+They are independent of each other — use whichever matches your run.
+
+### gen_swatches.py — simple accepted-bead sheet
+
+Reads a **clean CSV** (saturated rows already removed, or use the raw CSV and
+let it filter by `saturated == 0`).  Shows only accepted beads; no null
+reference, no rejects.  Useful as a quick sanity-check after a first
+calibration run.
+
+```bash
+# Edit the two constants at the top of the file before running:
+#   CSV_FILE = "beads_clean.csv"   ← your clean CSV path
+#   GAIN     = "g4x"               ← which gain to visualise
+python gen_swatches.py
+# Writes: bead_swatches_g4x.png
+```
+
+**Requires:** Pillow (`pip install pillow`).
+**Input:** clean CSV only.
+
+---
+
+### gen_swatches_white.py — white-background run with clustered rejects
+
+Produces a three-section sheet:
+
+1. **Null reference** — the empty-tube baseline swatch.
+2. **Accepted beads** — mean NormRGB colour + ΔH/ΔS/ΔL vs null ref.
+3. **Rejected bead clusters** — groups of near-identical rejections
+   (within 0.02 H / 0.03 S / 0.04 L of each other are merged into one
+   cluster swatch).  A red border flags clusters whose mean HSL sits
+   within the null-scan tolerances (0.03/0.05/0.05) of the null
+   reference — those are "too close to empty tube" rejections.
+
+```bash
+# Edit at the top of the file:
+#   CSV_RAW   = "BeadCalibration_20260313_whitebackground.csv"  ← raw serial output
+#   CSV_CLEAN = "beads_white_clean.csv"                         ← clean CSV
+#   GAIN      = "g16x"
+python gen_swatches_white.py
+# Writes: bead_swatches_white_bg.png
+```
+
+**Requires:** Pillow.
+**Inputs:** raw serial-output CSV **and** clean CSV.  The raw file is parsed
+for `# Null ref:` and `# REJECTED … read: … null ref: …` comment lines
+emitted by `BeadCalibrate.ino`.
+
+Use this variant when you want to understand **recurring reject patterns**
+(e.g. a single bead colour that consistently fails the null scan).
+
+---
+
+### gen_swatches_largewin.py — individual-reject diagnostic sheet
+
+Identical three-section layout to `gen_swatches_white.py`, but the third
+section shows **every individual rejection** as its own swatch rather than
+grouping them.  The `NULL_OFF` constant `(0.03, 0.05, 0.05)` matches
+`NULL_OFFSET_H/S/L` in `BeadCalibrate.ino` exactly; swatches whose ΔH/ΔS/ΔL
+all fall within those offsets get a red border.
+
+```bash
+# Pass the raw serial-output CSV directly; no separate clean CSV needed:
+python gen_swatches_largewin.py BeadCalibration_20260313_largerWindow.csv
+# Writes: bead_swatches_largewin.png
+
+# Custom output name:
+python gen_swatches_largewin.py BeadCalibration_20260313_improved.csv my_swatches.png
+
+# Different gain:
+python gen_swatches_largewin.py BeadCalibration_20260313_improved.csv my_swatches.png --gain g4x
+```
+
+**Requires:** Pillow.
+**Input:** raw serial-output CSV only (serves as both data source and comment parser).
+
+Use this variant when you want to inspect **each individual rejection event**
+(e.g. to see whether a bead is consistently rejected or only occasionally,
+and what its exact HSL values were each time).
+
+---
+
+### Which script to use?
+
+| Situation | Script |
+|---|---|
+| First look at colours from a new run | `gen_swatches.py` |
+| Many beads are failing the null scan; identify the recurring pattern | `gen_swatches_white.py` |
+| Debug specific rejection events one by one | `gen_swatches_largewin.py` |
+
+### Dependency on BeadCalibrate.ino comment format
+
+`gen_swatches_white.py` and `gen_swatches_largewin.py` parse the raw
+serial-output file using regular expressions that match two specific comment
+formats emitted by `BeadCalibrate.ino`:
+
+```
+# Null ref: H=0.1316  S=0.2317  L=0.3216
+# REJECTED 3  read: H=0.1300 S=0.2280 L=0.3190  null ref: H=0.1316 S=0.2317 L=0.3216
+```
+
+If you modify the `Serial.print` statements in `BeadCalibrate.ino` that
+produce these lines, you must update the regex patterns in both scripts
+accordingly.
+
+---
+
 ## Full workflow
 
 ```
 1. Flash BeadCalibrate.ino
 2. Open Serial Monitor at 115200 baud
 3. Run all beads through the machine
-4. Copy Serial output → save as beads.csv
+4. Copy Serial output → save as beads.csv  (this is the "raw" file)
 5. python analyse_beads.py beads.csv
 6. Note recommended gain and thresholds
-7. Update BeadSorter.ino with new values
-8. Re-flash BeadSorter.ino and verify sorting accuracy
+7. (Optional) Run a swatch script to visualise colours:
+     python gen_swatches.py            # quick look, accepted beads only
+     python gen_swatches_white.py      # clustered rejects + null ref
+     python gen_swatches_largewin.py   # individual rejects + null ref
+8. Update BeadSorter.ino with new gain and threshold values
+9. Re-flash BeadSorter.ino and verify sorting accuracy
 ```

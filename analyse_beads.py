@@ -33,6 +33,22 @@ Colour spaces compared
               but included for completeness)
   NormRGB   — R_norm, G_norm, B_norm  (clear-normalised, 0-255 scale)
 
+Scale note — why raw distances cannot be compared across colour spaces
+----------------------------------------------------------------------
+  NormRGB operates on a 0-255 axis scale while all other spaces use 0-1,
+  so raw Euclidean distances differ by a factor of up to ~255.  A NormRGB
+  distance of 1.8 is NOT larger than a Chroma2 distance of 0.005 — they
+  live on completely different rulers.
+
+  The correct comparison metric is SNR (signal-to-noise ratio):
+
+      SNR = min inter-bead distance / intra-bead noise RMS
+
+  where noise RMS = sqrt(Σ avg_bead(σ_dim²)) across all dimensions of the
+  space.  This is dimensionless and scale-independent.  An SNR > ~3 means
+  beads are separated by more than 3× the typical sensor jitter — reliably
+  classifiable.  All tables and the final recommendation use SNR.
+
 Notes
 -----
   - Chroma2 is usually best for this sensor because it is immune to absolute
@@ -44,12 +60,17 @@ Notes
 """
 
 import sys
+import io
 import csv
 import math
 import collections
 import itertools
 import argparse
 import statistics
+
+# Ensure UTF-8 output on Windows terminals that default to cp1252.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # ── Circular hue helpers ──────────────────────────────────────────────────────
 
@@ -111,15 +132,64 @@ COLOR_SPACES = {
     "NormRGB": dist_normrgb,
 }
 
+# std_* fields that contribute to each space's noise RMS estimate.
+# Must match the dimensions used in the corresponding dist_* function.
+CS_STD_FIELDS = {
+    "HSL":     ["std_H", "std_S", "std_L"],
+    "HS":      ["std_H", "std_S"],
+    "Chroma2": ["std_chroma_r", "std_chroma_g"],
+    "Chroma3": ["std_chroma_r", "std_chroma_g", "std_chroma_b"],
+    "NormRGB": ["std_R_norm", "std_G_norm", "std_B_norm"],
+}
+
+
+def cs_noise_rms(means: dict, cs_name: str) -> float:
+    """
+    Typical intra-bead positional noise magnitude for a given colour space.
+
+    Computed as sqrt(Σ_dim  mean_bead(σ_dim²)) — the expected Euclidean
+    distance between a bead's true colour-space position and one noisy
+    measurement.  Scale-aware: directly comparable to the same space's
+    dist_* output, so dividing distance / noise_rms gives a dimensionless
+    SNR that can be compared across colour spaces and gains.
+
+    Only beads with ≥2 samples (which carry std fields) contribute.
+    Returns NaN if none qualify.
+    """
+    std_fields = CS_STD_FIELDS[cs_name]
+    qualifying = [m for m in means.values() if std_fields[0] in m]
+    if not qualifying:
+        return float("nan")
+    return math.sqrt(sum(
+        statistics.mean(m[f] ** 2 for m in qualifying)
+        for f in std_fields
+    ))
+
 # ── CSV parsing ───────────────────────────────────────────────────────────────
 
 def parse_csv(path: str) -> list:
     rows = []
     with open(path, newline="", encoding="utf-8") as fh:
-        # Filter comment lines before handing to DictReader.
-        clean = (line for line in fh if not line.lstrip().startswith("#"))
-        reader = csv.DictReader(clean)
-        for row in reader:
+        lines = fh.readlines()
+
+    # Find the actual CSV header — first non-comment line containing 'bead,gain'.
+    header_idx = None
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("#"):
+            continue
+        if "bead" in line and "gain" in line and "sample" in line:
+            header_idx = i
+            break
+    if header_idx is None:
+        return rows
+
+    # Keep header + data lines; drop comment lines.
+    data_lines = [lines[header_idx]] + [
+        l for l in lines[header_idx + 1:]
+        if not l.lstrip().startswith("#")
+    ]
+    reader = csv.DictReader(io.StringIO("".join(data_lines)))
+    for row in reader:
             try:
                 entry = {
                     "bead":     int(row["bead"]),
@@ -238,6 +308,9 @@ def main():
                     help="Restrict analysis to one gain label, e.g. g16x")
     ap.add_argument("--top", type=int, default=10,
                     help="Number of closest bead pairs to list (default 10)")
+    ap.add_argument("--min-samples", type=int, default=2,
+                    help="Exclude beads with fewer than N samples (default 2). "
+                         "Filters out single-shot calibration/wiggle entries.")
     args = ap.parse_args()
 
     rows = parse_csv(args.csv_file)
@@ -266,8 +339,9 @@ def main():
         print(f"  {gain:8s}  {len(sat):>12d}  {len(total):>8d}  {pct:>4.0f}%{flag}")
     print()
 
-    # Collect best-colour-space score per gain for cross-gain table.
-    cross_gain_scores = {}  # gain → {cs_name: min_dist}
+    # Collect per-gain colour-space metrics for the cross-gain comparison table.
+    cross_gain_scores = {}   # gain → {cs_name: min_dist}
+    cross_gain_snr    = {}   # gain → {cs_name: SNR}
 
     # ── 2. Per-gain deep analysis ──────────────────────────────────────────────
     for gain in gains_todo:
@@ -276,8 +350,10 @@ def main():
         sep("═")
 
         means = compute_bead_means(rows, gain)
+        # Drop beads with too few samples (e.g. single-shot wiggle/calibration entries).
+        means = {b: m for b, m in means.items() if m["n"] >= args.min_samples}
         if len(means) < 2:
-            print(f"  Fewer than 2 unsaturated beads at gain {gain}. Skipping.\n")
+            print(f"  Fewer than 2 beads with ≥{args.min_samples} samples at gain {gain}. Skipping.\n")
             continue
 
         # ── 2a. Per-bead averages ──────────────────────────────────────────────
@@ -305,33 +381,44 @@ def main():
                   f"  chR={avg_std_chR:.5f}  chG={avg_std_chG:.5f}")
 
         # ── 2c. Pairwise distances per colour space ───────────────────────────
-        print(f"\nColour-space separability  (min inter-bead distance — higher = better)")
+        print(f"\nColour-space separability")
+        print(f"  SNR = min inter-bead dist / intra-bead noise RMS  (scale-independent; higher = better)")
+        sep()
+        print(f"  {'Space':8s}  {'min dist':>10s}  {'noise RMS':>10s}  {'SNR':>6s}  closest pair")
         sep()
         cs_scores = {}
+        cs_snr    = {}
         best_cs_name = None
-        best_cs_score = -1.0
+        best_cs_snr  = -1.0
         for cs_name, dist_fn in COLOR_SPACES.items():
             pairs = pairwise_distances(means, dist_fn)
             min_d, ba, bb = pairs[0]
+            nrms = cs_noise_rms(means, cs_name)
+            snr  = min_d / nrms if (nrms > 0 and not math.isnan(nrms)) else float("nan")
             cs_scores[cs_name] = min_d
-            flag = " ◄ BEST" if False else ""  # placeholder; filled below
-            print(f"  {cs_name:8s}  min dist = {min_d:.5f}  (closest pair: beads {ba} vs {bb})")
-            if min_d > best_cs_score:
-                best_cs_score = min_d
-                best_cs_name  = cs_name
+            cs_snr[cs_name]    = snr
+            snr_str = f"{snr:6.1f}" if not math.isnan(snr) else "   n/a"
+            print(f"  {cs_name:8s}  {min_d:10.5f}  {nrms:10.5f}  {snr_str}  beads {ba} vs {bb}")
+            if not math.isnan(snr) and snr > best_cs_snr:
+                best_cs_snr  = snr
+                best_cs_name = cs_name
 
         cross_gain_scores[gain] = cs_scores
+        cross_gain_snr[gain]    = cs_snr
         print(f"\n  ► Best colour space at this gain: {best_cs_name}"
-              f"  (min pair dist = {best_cs_score:.5f})")
+              f"  (SNR = {best_cs_snr:.1f})")
 
         # ── 2d. Closest pairs in the best colour space ────────────────────────
         best_pairs = pairwise_distances(means, COLOR_SPACES[best_cs_name])
+        best_nrms  = cs_noise_rms(means, best_cs_name)
         n_show = min(args.top, len(best_pairs))
         print(f"\n  Closest {n_show} bead pairs in {best_cs_name} space:")
         sep()
         for dist, ba, bb in best_pairs[:n_show]:
-            warn = "  ← may collide" if dist < 0.040 else ""
-            print(f"    beads {ba:3d} vs {bb:3d}  dist = {dist:.5f}{warn}")
+            pair_snr = dist / best_nrms if best_nrms > 0 else float("nan")
+            warn = "  ← may collide" if (not math.isnan(pair_snr) and pair_snr < 3.0) else ""
+            snr_str = f"  SNR={pair_snr:.1f}" if not math.isnan(pair_snr) else ""
+            print(f"    beads {ba:3d} vs {bb:3d}  dist = {dist:.5f}{snr_str}{warn}")
 
         # ── 2e. Threshold suggestions ─────────────────────────────────────────
         thH, thS, thL = suggest_hsl_thresholds(means)
@@ -344,32 +431,37 @@ def main():
         print()
 
     # ── 3. Cross-gain comparison ───────────────────────────────────────────────
-    if len(gains_todo) > 1 and len(cross_gain_scores) >= 2:
+    if len(gains_todo) > 1 and len(cross_gain_snr) >= 2:
         sep("═")
-        print("CROSS-GAIN COMPARISON  (min pairwise distance — higher = better)")
+        print("CROSS-GAIN COMPARISON  (SNR = min inter-bead dist / noise RMS — higher = better)")
+        print("  Raw distances are on different scales per colour space and cannot be compared")
+        print("  directly. SNR is dimensionless and scale-independent.")
         sep("═")
         cs_names = list(COLOR_SPACES.keys())
         header = f"  {'Gain':8s}" + "".join(f"  {n:>8s}" for n in cs_names)
         print(header)
         sep()
         for gain in gains_todo:
-            if gain not in cross_gain_scores:
+            if gain not in cross_gain_snr:
                 continue
             row_str = f"  {gain:8s}"
             row_str += "".join(
-                f"  {cross_gain_scores[gain].get(n, 0.0):>8.4f}"
+                f"  {cross_gain_snr[gain].get(n, float('nan')):>8.1f}"
                 for n in cs_names
             )
             print(row_str)
 
-        # Best overall combination.
+        # Best overall combination — highest SNR across all gain×space combos.
         best_gain = max(
-            cross_gain_scores,
-            key=lambda g: max(cross_gain_scores[g].values(), default=0.0)
+            cross_gain_snr,
+            key=lambda g: max(
+                (v for v in cross_gain_snr[g].values() if not math.isnan(v)),
+                default=0.0
+            )
         )
         best_cs_all = max(
             COLOR_SPACES,
-            key=lambda cs: cross_gain_scores.get(best_gain, {}).get(cs, 0.0)
+            key=lambda cs: cross_gain_snr.get(best_gain, {}).get(cs, 0.0)
         )
         gain_enum = {
             "g1x":  "TCS34725_GAIN_1X",
@@ -377,12 +469,13 @@ def main():
             "g16x": "TCS34725_GAIN_16X",
             "g60x": "TCS34725_GAIN_60X",
         }
+        best_snr = cross_gain_snr.get(best_gain, {}).get(best_cs_all, float("nan"))
         print()
         sep("═")
-        print(f"RECOMMENDATION")
+        print(f"RECOMMENDATION  (based on best SNR)")
         sep("═")
-        print(f"  Best gain:        {best_gain}")
-        print(f"  Best colour space: {best_cs_all}")
+        print(f"  Best gain:         {best_gain}")
+        print(f"  Best colour space: {best_cs_all}  (SNR = {best_snr:.1f})")
         print()
         print(f"  If switching gain in BeadSorter.ino:")
         print(f"    Adafruit_TCS34725 tcs = Adafruit_TCS34725(")
@@ -390,7 +483,8 @@ def main():
         print(f"        {gain_enum.get(best_gain, best_gain)});")
 
         # Print best-gain thresholds one more time.
-        best_means = compute_bead_means(rows, best_gain)
+        best_means = {b: m for b, m in compute_bead_means(rows, best_gain).items()
+                      if m["n"] >= args.min_samples}
         if len(best_means) >= 2:
             thH, thS, thL = suggest_hsl_thresholds(best_means)
             thCh = suggest_chroma_threshold(best_means)
