@@ -55,7 +55,7 @@
 #define GSM2 5 // Container Motor
 #define in3 7 //Container Motor
 #define in4 6 //Container Motor
-#define hopperMotorReverseTime  3000 //in ms - time of ~ revolution
+#define hopperMotorReverseTime  6000 //in ms - time of ~ revolution
 
 #define setupPin 11 //Setup
 
@@ -300,7 +300,9 @@ void loop() {
     sortBeadToDynamicArray();
     successfullBead = true;
   } else {
-    Serial.print('.');
+    Serial.println(F("No bead detected (null scan):"));
+    printBeadReading();
+    moveSorterToPosition(15);
     successfullBead = false;
   }
 
