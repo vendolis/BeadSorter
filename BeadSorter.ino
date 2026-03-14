@@ -13,17 +13,29 @@
   #define PSTR(x) x
   #define snprintf_P snprintf
   typedef char __FlashStringHelper;  // makes const __FlashStringHelper* == const char*
-  // Simple pass-throughs so IntelliSense resolves SAFE_PRINT / SAFE_PRINTLN calls.
-  #define SAFE_PRINT(...)   Serial.print(__VA_ARGS__)
-  #define SAFE_PRINTLN(...) Serial.println(__VA_ARGS__)
+  // Under IntelliSense 'SafeSerial' is just Serial so all Print overloads resolve.
+  #define SafeSerial Serial
 #else
-  // Non-blocking serial print helpers.
-  // The Arduino AVR core's Serial.write() spin-waits indefinitely when the 64-byte
-  // TX buffer is full and the UART cannot drain (e.g. TX line issue, no terminal).
-  // These macros skip the print when there is insufficient buffer space, preventing
-  // the program from freezing. Output may be dropped but execution never stalls.
-  #define SAFE_PRINT(...)   do { if (Serial.availableForWrite() > 16) { Serial.print(__VA_ARGS__);   } } while(0)
-  #define SAFE_PRINTLN(...) do { if (Serial.availableForWrite() > 16) { Serial.println(__VA_ARGS__); } } while(0)
+  /*
+   * SafePrint — non-blocking serial wrapper.
+   * Inherits every print() / println() overload from the Arduino Print base class.
+   * The TX-buffer check is done once inside write(), not at every call site,
+   * keeping flash usage minimal. Output is silently dropped when the buffer
+   * has fewer than 2 bytes free, preventing spin-wait hangs with no terminal.
+   */
+  class SafePrint : public Print {
+  public:
+    size_t write(uint8_t b) override {
+      if (Serial.availableForWrite() < 2) return 0;
+      return Serial.write(b);
+    }
+    size_t write(const uint8_t* buf, size_t n) override {
+      size_t avail = (size_t)Serial.availableForWrite();
+      if (avail < 2) return 0;
+      if (n > avail) n = avail;
+      return Serial.write(buf, n);
+    }
+  } SafeSerial;
 #endif
 
 #define dirPin 2 //Stepper
@@ -122,35 +134,35 @@ int dynamicContainerArray[dynamicContainerArraySize] = { -1, -1, 666, -1, -1, -1
 
 void setup() {
   Serial.begin(115200);
-  SAFE_PRINTLN();
-  SAFE_PRINTLN(F("=== BeadSorter starting ==="));
+  SafeSerial.println();
+  SafeSerial.println(F("=== BeadSorter starting ==="));
 
   // Setup Hopper Motor Pins
-  SAFE_PRINTLN(F("[INIT] Hopper motor pins..."));
+  SafeSerial.println(F("[INIT] Hopper motor pins..."));
   pinMode(GSM2, OUTPUT);
   pinMode(in3, OUTPUT);
   pinMode(in4, OUTPUT);
 
-  SAFE_PRINTLN(F("[INIT] Setup button pin..."));
+  SafeSerial.println(F("[INIT] Setup button pin..."));
   pinMode(setupPin, INPUT);
 
-  SAFE_PRINTLN(F("[INIT] Photo sensor LED pin..."));
+  SafeSerial.println(F("[INIT] Photo sensor LED pin..."));
   pinMode(photoLEDPin, OUTPUT);
   digitalWrite(photoLEDPin, HIGH); // LED on by default
 
-  SAFE_PRINTLN(F("[INIT] Servo..."));
+  SafeSerial.println(F("[INIT] Servo..."));
   servo.attach(servoPin);
   servo.write(servoAngleIn);
 
-  SAFE_PRINT(F("[INIT] Stepper (maxSpeed=")); SAFE_PRINT(stepperMaxSpeed);
-  SAFE_PRINT(F(", accel=")); SAFE_PRINT(stepperAccel); SAFE_PRINTLN(F(")..."));
+  SafeSerial.print(F("[INIT] Stepper (maxSpeed=")); SafeSerial.print(stepperMaxSpeed);
+  SafeSerial.print(F(", accel=")); SafeSerial.print(stepperAccel); SafeSerial.println(F(")..."));
   stepper.setMaxSpeed(stepperMaxSpeed);
   stepper.setAcceleration(stepperAccel);
   stepper.setCurrentPosition(0);
 
 #if defined DEBUG_PROG && DEBUG_PROG == 1
   // Full 360 turn, then return to home
-  SAFE_PRINTLN(F("[DEBUG] Stepper: full 360 turn..."));
+  SafeSerial.println(F("[DEBUG] Stepper: full 360 turn..."));
   stepper.moveTo(stepperStepsPerRot * stepperMicroStepping);
   stepper.runToPosition();
   delay(500);
@@ -159,48 +171,48 @@ void setup() {
   delay(500);
 
   // Visit each output slot once
-  SAFE_PRINTLN(F("[DEBUG] Stepper: cycling all output slots..."));
+  SafeSerial.println(F("[DEBUG] Stepper: cycling all output slots..."));
   for (int slot = 0; slot < numContainerSlots; slot++) {
-    SAFE_PRINT(F("[DEBUG] Slot ")); SAFE_PRINTLN(slot);
+    SafeSerial.print(F("[DEBUG] Slot ")); SafeSerial.println(slot);
     stepper.moveTo(slot * stepperMulti);
     stepper.runToPosition();
     delay(500);
   }
 
   // Return to slot 0
-  SAFE_PRINTLN(F("[DEBUG] Returning to slot 0..."));
+  SafeSerial.println(F("[DEBUG] Returning to slot 0..."));
   stepper.moveTo(0);
   stepper.runToPosition();
-  SAFE_PRINTLN(F("[DEBUG] Stepper test complete."));
+  SafeSerial.println(F("[DEBUG] Stepper test complete."));
   while (1);
 #endif
 
   // Hold setup button during boot to enter interactive debug mode (2s window)
   {
-    SAFE_PRINTLN(F("[INIT] Hold setup button to enter interactive debug mode (2s)..."));
+    SafeSerial.println(F("[INIT] Hold setup button to enter interactive debug mode (2s)..."));
     unsigned long t = millis();
     bool debugRequested = false;
     while (millis() - t < 2000) {
       if (digitalRead(setupPin) == HIGH) {
-        SAFE_PRINTLN(F("[Debug] Setup Button registered."));
+        SafeSerial.println(F("[Debug] Setup Button registered."));
         debugRequested = true;
         break;
       }
     }
     if (debugRequested) {
-      SAFE_PRINTLN(F("[Debug] Entering Debug mode."));
+      SafeSerial.println(F("[Debug] Entering Debug mode."));
       runInteractiveDebug(); // never returns
       while (1);
     }
-    SAFE_PRINTLN(F("[INIT] Continuing normal startup."));
+    SafeSerial.println(F("[INIT] Continuing normal startup."));
   }
 
   calibratePhotoSensor();
 
   if (tcs.begin()) {
-    SAFE_PRINTLN(F("[INIT] TCS34725 color sensor found."));
+    SafeSerial.println(F("[INIT] TCS34725 color sensor found."));
   } else {
-    SAFE_PRINTLN(F("ERROR: TCS34725 not found, exiting!"));
+    SafeSerial.println(F("ERROR: TCS34725 not found, exiting!"));
     while (1); // Stop program
   }
 
@@ -219,31 +231,31 @@ void setup() {
   }
 #endif
 
-  SAFE_PRINT(F("[INIT] Mode: "));
-  SAFE_PRINTLN(autoSort ? F("autoSort") : F("manual (preset colors)"));
+  SafeSerial.print(F("[INIT] Mode: "));
+  SafeSerial.println(autoSort ? F("autoSort") : F("manual (preset colors)"));
   if (!autoSort) {
-    SAFE_PRINTLN(F("[INIT] Importing default color set..."));
+    SafeSerial.println(F("[INIT] Importing default color set..."));
     importDefaultColorSet();
-    SAFE_PRINTLN(F("[INIT] Default colors imported."));
+    SafeSerial.println(F("[INIT] Default colors imported."));
   }
 
   if (calibrateNullScan) {
-    SAFE_PRINTLN(F("[INIT] Null scan calibration: cycling servo..."));
+    SafeSerial.println(F("[INIT] Null scan calibration: cycling servo..."));
     for (int i = 0; i < 6; i++) {
-      SAFE_PRINT(F("  cycle ")); SAFE_PRINT(i + 1); SAFE_PRINTLN(F("/6"));
+      SafeSerial.print(F("  cycle ")); SafeSerial.print(i + 1); SafeSerial.println(F("/6"));
       servoFeedIn();
       servoFeedOut();
     }
     servoFeedIn();
     readColorSensor();
     setNullScanValues();
-    SAFE_PRINTLN(F("[INIT] Null scan calibration done."));
+    SafeSerial.println(F("[INIT] Null scan calibration done."));
   } else {
-    SAFE_PRINTLN(F("[INIT] Null scan calibration skipped (using hardcoded values)."));
+    SafeSerial.println(F("[INIT] Null scan calibration skipped (using hardcoded values)."));
   }
 
-  SAFE_PRINTLN(F("=== Setup complete. Starting continuous color scan. ==="));
-  SAFE_PRINTLN();
+  SafeSerial.println(F("=== Setup complete. Starting continuous color scan. ==="));
+  SafeSerial.println();
 }
 
 void loop() {
@@ -279,13 +291,13 @@ void loop() {
   readColorSensor();
 
   if (!nullScan()) {
-    SAFE_PRINTLN();
-    SAFE_PRINT(F("Bead #")); SAFE_PRINTLN(beadCounter++);
+    SafeSerial.println();
+    SafeSerial.print(F("Bead #")); SafeSerial.println(beadCounter++);
     printBeadReading();
     sortBeadToDynamicArray();
     successfullBead = true;
   } else {
-    SAFE_PRINT('.');
+    SafeSerial.print('.');
     successfullBead = false;
   }
 
@@ -298,12 +310,12 @@ void loop() {
 void printTables() {
   char line[48];
 
-  SAFE_PRINTLN(F("Nullscan (H S L):"));
+  SafeSerial.println(F("Nullscan (H S L):"));
   snprintf_P(line, sizeof(line), PSTR("%2d H=%.4f S=%.4f L=%.4f"),
              0, nullScanHSL[0], nullScanHSL[1], nullScanHSL[2]);
-  SAFE_PRINTLN(line);
+  SafeSerial.println(line);
 
-  SAFE_PRINTLN(F("Stored colors (H S L):"));
+  SafeSerial.println(F("Stored colors (H S L):"));
   for (int i = 0; i < 16; i++) {
     if (storedColors[i][0] < 0) {
       snprintf_P(line, sizeof(line), PSTR("%2d (empty)"), i);
@@ -311,15 +323,15 @@ void printTables() {
       snprintf_P(line, sizeof(line), PSTR("%2d H=%.4f S=%.4f L=%.4f"),
                  i, storedColors[i][0], storedColors[i][1], storedColors[i][2]);
     }
-    SAFE_PRINTLN(line);
+    SafeSerial.println(line);
   }
 
-  SAFE_PRINTLN(F("Container array:"));
+  SafeSerial.println(F("Container array:"));
   for (int i = 0; i < dynamicContainerArraySize; i++) {
-    SAFE_PRINT(dynamicContainerArray[i]);
-    SAFE_PRINT(' ');
+    SafeSerial.print(dynamicContainerArray[i]);
+    SafeSerial.print(' ');
   }
-  SAFE_PRINTLN();
+  SafeSerial.println();
 }
 
 
@@ -330,7 +342,7 @@ void printTables() {
 *  which indicates a broken LED or blocked line of sight.
 */
 void calibratePhotoSensor() {
-  SAFE_PRINTLN(F("[INIT] Calibrating photo sensor..."));
+  SafeSerial.println(F("[INIT] Calibrating photo sensor..."));
   int sumOn  = 0;
   int sumOff = 0;
 
@@ -349,19 +361,19 @@ void calibratePhotoSensor() {
 
   digitalWrite(photoLEDPin, HIGH); // restore LED on for normal operation
 
-  SAFE_PRINT(F("Photo sensor calib: LED on="));
-  SAFE_PRINT(avgOn);
-  SAFE_PRINT(F(", LED off="));
-  SAFE_PRINT(avgOff);
-  SAFE_PRINT(F(", diff="));
-  SAFE_PRINTLN(abs(avgOn - avgOff));
+  SafeSerial.print(F("Photo sensor calib: LED on="));
+  SafeSerial.print(avgOn);
+  SafeSerial.print(F(", LED off="));
+  SafeSerial.print(avgOff);
+  SafeSerial.print(F(", diff="));
+  SafeSerial.println(abs(avgOn - avgOff));
 
   if (abs(avgOn - avgOff) < photoSensorCalibMinDiff) {
-    SAFE_PRINTLN(F("ERROR: Photo sensor calib failed! LED broken or line of sight blocked."));
+    SafeSerial.println(F("ERROR: Photo sensor calib failed! LED broken or line of sight blocked."));
     while (1); // halt
   }
 
-  SAFE_PRINTLN(F("Photo sensor calibration OK."));
+  SafeSerial.println(F("Photo sensor calibration OK."));
 }
 
 /* Logic for the hopper motor
@@ -386,15 +398,15 @@ void handleHopperMotor(bool successfullBead)
 
   int photoSensor = analogRead(photoSensorPin);
 #ifdef DEBUG_PRINT_PHOTOSENS
-  SAFE_PRINTLN();
-  SAFE_PRINTLN(photoSensor);
+  SafeSerial.println();
+  SafeSerial.println(photoSensor);
 #endif
   if (photoSensor > photoSensorThreshold) {   //PhotoSensor detected no beads in the feeding tube
     startHopperMotor(direction);
   } else {                                    //PhotoSensor detected beads in the feeding tube --> stop the motor
     stopHopperMotor();
-    SAFE_PRINT(F("Photosensor detected Beads "));
-    SAFE_PRINTLN(photoSensor);
+    SafeSerial.print(F("Photosensor detected Beads "));
+    SafeSerial.println(photoSensor);
   }
 }
 
@@ -410,7 +422,7 @@ void addColor() {
   clearMedianColors();
   stopHopperMotor();
 
-  SAFE_PRINT(F("Insert Color to register. Press button when done..."));
+  SafeSerial.print(F("Insert Color to register. Press button when done..."));
 
   while (digitalRead(setupPin) == LOW) {}
 
@@ -418,7 +430,7 @@ void addColor() {
   delay(10000);
   stopHopperMotor();
   for (int i = 0; i < 4; i++) {
-    SAFE_PRINT(i + 1); SAFE_PRINT(F("/4: "));
+    SafeSerial.print(i + 1); SafeSerial.print(F("/4: "));
     servoFeedIn();
     delay(500);
     servoWiggleIn();
@@ -515,23 +527,23 @@ void printBeadReading() {
   bool  sat  = (resultRaw[0] >= 65530 || resultRaw[1] >= 65530 ||
                 resultRaw[2] >= 65530 || resultRaw[3] >= 65530);
 
-  SAFE_PRINT(F("  raw  R=")); SAFE_PRINT(resultRaw[0]);
-  SAFE_PRINT(F(" G="));       SAFE_PRINT(resultRaw[1]);
-  SAFE_PRINT(F(" B="));       SAFE_PRINT(resultRaw[2]);
-  SAFE_PRINT(F(" C="));       SAFE_PRINT(resultRaw[3]);
-  SAFE_PRINTLN(sat ? F(" [SATURATED]") : F(""));
+  SafeSerial.print(F("  raw  R=")); SafeSerial.print(resultRaw[0]);
+  SafeSerial.print(F(" G="));       SafeSerial.print(resultRaw[1]);
+  SafeSerial.print(F(" B="));       SafeSerial.print(resultRaw[2]);
+  SafeSerial.print(F(" C="));       SafeSerial.print(resultRaw[3]);
+  SafeSerial.println(sat ? F(" [SATURATED]") : F(""));
 
-  SAFE_PRINT(F("  norm Rn=")); SAFE_PRINT(resultNorm[0], 1);
-  SAFE_PRINT(F(" Gn="));       SAFE_PRINT(resultNorm[1], 1);
-  SAFE_PRINT(F(" Bn="));       SAFE_PRINTLN(resultNorm[2], 1);
+  SafeSerial.print(F("  norm Rn=")); SafeSerial.print(resultNorm[0], 1);
+  SafeSerial.print(F(" Gn="));       SafeSerial.print(resultNorm[1], 1);
+  SafeSerial.print(F(" Bn="));       SafeSerial.println(resultNorm[2], 1);
 
-  SAFE_PRINT(F("  chroma chR=")); SAFE_PRINT(chR, 4);
-  SAFE_PRINT(F(" chG="));         SAFE_PRINT(chG, 4);
-  SAFE_PRINT(F(" chB="));         SAFE_PRINTLN(chB, 4);
+  SafeSerial.print(F("  chroma chR=")); SafeSerial.print(chR, 4);
+  SafeSerial.print(F(" chG="));         SafeSerial.print(chG, 4);
+  SafeSerial.print(F(" chB="));         SafeSerial.println(chB, 4);
 
-  SAFE_PRINT(F("  HSL   H=")); SAFE_PRINT(resultHSL[0], 4);
-  SAFE_PRINT(F(" S="));        SAFE_PRINT(resultHSL[1], 4);
-  SAFE_PRINT(F(" L="));        SAFE_PRINTLN(resultHSL[2], 4);
+  SafeSerial.print(F("  HSL   H=")); SafeSerial.print(resultHSL[0], 4);
+  SafeSerial.print(F(" S="));        SafeSerial.print(resultHSL[1], 4);
+  SafeSerial.print(F(" L="));        SafeSerial.println(resultHSL[2], 4);
 }
 
 void addColorToMedianColors(int noOfTest) {
@@ -577,10 +589,10 @@ void calcMedianAndStore() {
   int nextColorNo = getNextFreeArrayPlace();
   storeColor(nextColorNo, resultHSL[0], resultHSL[1], resultHSL[2]);
 
-  SAFE_PRINT(F("Stored color to bank #")); SAFE_PRINT(nextColorNo);
-  SAFE_PRINT(F("  H=")); SAFE_PRINT(resultHSL[0], 4);
-  SAFE_PRINT(F("  S=")); SAFE_PRINT(resultHSL[1], 4);
-  SAFE_PRINT(F("  L=")); SAFE_PRINTLN(resultHSL[2], 4);
+  SafeSerial.print(F("Stored color to bank #")); SafeSerial.print(nextColorNo);
+  SafeSerial.print(F("  H=")); SafeSerial.print(resultHSL[0], 4);
+  SafeSerial.print(F("  S=")); SafeSerial.print(resultHSL[1], 4);
+  SafeSerial.print(F("  L=")); SafeSerial.println(resultHSL[2], 4);
 }
 
 /*
@@ -590,8 +602,8 @@ void calcMedianAndStore() {
  * Re-register each color manually via the setup-button flow.
  */
 void importDefaultColorSet() {
-  SAFE_PRINTLN(F("[WARN] Default color set unavailable: raw RGBC values have been"));
-  SAFE_PRINTLN(F("       replaced by HSL. Re-register each color with the setup button."));
+  SafeSerial.println(F("[WARN] Default color set unavailable: raw RGBC values have been"));
+  SafeSerial.println(F("       replaced by HSL. Re-register each color with the setup button."));
 }
 
 // Returns color name as a flash string pointer — no RAM allocation.
@@ -650,9 +662,9 @@ void setNullScanValues() {
   nullScanHSL[1] = resultHSL[1];
   nullScanHSL[2] = resultHSL[2];
 
-  SAFE_PRINT(F("Calib results H=")); SAFE_PRINT(nullScanHSL[0], 4);
-  SAFE_PRINT(F(" S="));             SAFE_PRINT(nullScanHSL[1], 4);
-  SAFE_PRINT(F(" L="));             SAFE_PRINTLN(nullScanHSL[2], 4);
+  SafeSerial.print(F("Calib results H=")); SafeSerial.print(nullScanHSL[0], 4);
+  SafeSerial.print(F(" S="));             SafeSerial.print(nullScanHSL[1], 4);
+  SafeSerial.print(F(" L="));             SafeSerial.println(nullScanHSL[2], 4);
 }
 
 /*
@@ -680,7 +692,7 @@ int findColorInStorage()
 
 void sortBeadToDynamicArray() {
   bool found = false;
-  SAFE_PRINTLN(F("Analyzing Results:"));
+  SafeSerial.println(F("Analyzing Results:"));
   clearMedianColors();
 
   // if we can still store new colors, do up to 4 retries to get a more stable reading for the new color.
@@ -690,19 +702,19 @@ void sortBeadToDynamicArray() {
   for (int retries = 0; retries < maxRetries; retries++) {
     int index = findColorInStorage();
     if (index != -1) {
-      SAFE_PRINT(F("Color match #")); SAFE_PRINT(index);
-      SAFE_PRINT(F("  H=")); SAFE_PRINT(storedColors[index][0], 4);
-      SAFE_PRINT(F("  S=")); SAFE_PRINT(storedColors[index][1], 4);
-      SAFE_PRINT(F("  L=")); SAFE_PRINTLN(storedColors[index][2], 4);
+      SafeSerial.print(F("Color match #")); SafeSerial.print(index);
+      SafeSerial.print(F("  H=")); SafeSerial.print(storedColors[index][0], 4);
+      SafeSerial.print(F("  S=")); SafeSerial.print(storedColors[index][1], 4);
+      SafeSerial.print(F("  L=")); SafeSerial.println(storedColors[index][2], 4);
 
       if (!autoSort) {
-        SAFE_PRINT(F("Color is ")); SAFE_PRINT(getColorNameFromNo(index)); SAFE_PRINTLN(F("."));
+        SafeSerial.print(F("Color is ")); SafeSerial.print(getColorNameFromNo(index)); SafeSerial.println(F("."));
       }
 
-      SAFE_PRINT(F("Color Distance: ")); SAFE_PRINTLN(colorDistanceHSL(storedColors[index], resultHSL), 4);
+      SafeSerial.print(F("Color Distance: ")); SafeSerial.println(colorDistanceHSL(storedColors[index], resultHSL), 4);
 
       int containerNo = getContainerNo(index);
-      SAFE_PRINT(F("move stepper to container No:")); SAFE_PRINTLN(containerNo);
+      SafeSerial.print(F("move stepper to container No:")); SafeSerial.println(containerNo);
       moveSorterToPosition(containerNo);
       found = true;
       break;
@@ -728,21 +740,21 @@ void sortBeadToDynamicArray() {
     resultHSL[1] = sSum / 4.0f;
     resultHSL[2] = lSum / 4.0f;
 
-    SAFE_PRINT(F("not found. Avg H=")); SAFE_PRINT(resultHSL[0], 4);
-    SAFE_PRINT(F(" S=")); SAFE_PRINT(resultHSL[1], 4);
-    SAFE_PRINT(F(" L=")); SAFE_PRINTLN(resultHSL[2], 4);
+    SafeSerial.print(F("not found. Avg H=")); SafeSerial.print(resultHSL[0], 4);
+    SafeSerial.print(F(" S=")); SafeSerial.print(resultHSL[1], 4);
+    SafeSerial.print(F(" L=")); SafeSerial.println(resultHSL[2], 4);
 
     if (autoSort) {
-      SAFE_PRINTLN(F("autosort!"));
+      SafeSerial.println(F("autosort!"));
       if (!allContainerFull() && autoColorCounter < autoSortMaxColors) {
-        SAFE_PRINT(F("not allContainerFull. StoreColor "));
-        SAFE_PRINTLN(autoColorCounter);
+        SafeSerial.print(F("not allContainerFull. StoreColor "));
+        SafeSerial.println(autoColorCounter);
         storeColor(autoColorCounter, resultHSL[0], resultHSL[1], resultHSL[2]);
         int containerNo = getContainerNo(autoColorCounter);
         autoColorCounter++;
         moveSorterToPosition(containerNo);
       } else {
-        SAFE_PRINTLN(F("All sort slots full -> dumping to bin 15."));
+        SafeSerial.println(F("All sort slots full -> dumping to bin 15."));
         moveSorterToPosition(dynamicContainerArraySize - 1);
       }
     } else {
@@ -756,7 +768,7 @@ int getContainerNo(int colorIndex) {
 
   for (int i = 0; i < dynamicContainerArraySize; i++) {
     if (colorIndex == dynamicContainerArray[i]) {
-      SAFE_PRINT(F("Color found in container array: ")); SAFE_PRINTLN(dynamicContainerArray[i]);
+      SafeSerial.print(F("Color found in container array: ")); SafeSerial.println(dynamicContainerArray[i]);
       containerNo = i;
       break;
     }
@@ -774,7 +786,7 @@ int getContainerNo(int colorIndex) {
 }
 
 int getNextContainerNo(int colorIndex) {
-  SAFE_PRINTLN(F("finding container for new color"));
+  SafeSerial.println(F("finding container for new color"));
   int arrayCounter = 0;
 
   while ((arrayCounter < dynamicContainerArraySize - 1) && (dynamicContainerArray[arrayCounter] > -1)) {
@@ -782,7 +794,7 @@ int getNextContainerNo(int colorIndex) {
   }
   dynamicContainerArray[arrayCounter] = colorIndex;
 
-  SAFE_PRINT(F("Return Color Index: ")); SAFE_PRINTLN(colorIndex);
+  SafeSerial.print(F("Return Color Index: ")); SafeSerial.println(colorIndex);
   return arrayCounter;
 }
 
@@ -930,12 +942,12 @@ bool runStepperTo(long position) {
 // Triple press : enter Calibration Mode
 // -----------------------------------------------------------------------------
 int debugStep1_Hopper() {
-  SAFE_PRINTLN();
-  SAFE_PRINTLN(F("--- [DEBUG 1/3] Hopper Motor Test ---"));
-  SAFE_PRINTLN(F("  Motor running FORWARD."));
-  SAFE_PRINTLN(F("  Single press : switch direction"));
-  SAFE_PRINTLN(F("  Double press : next test (Servo / Color Sensor)"));
-  SAFE_PRINTLN(F("  Triple press : Calibration Mode"));
+  SafeSerial.println();
+  SafeSerial.println(F("--- [DEBUG 1/3] Hopper Motor Test ---"));
+  SafeSerial.println(F("  Motor running FORWARD."));
+  SafeSerial.println(F("  Single press : switch direction"));
+  SafeSerial.println(F("  Double press : next test (Servo / Color Sensor)"));
+  SafeSerial.println(F("  Triple press : Calibration Mode"));
 
   bool dir = false;
   startHopperMotor(dir);
@@ -945,15 +957,15 @@ int debugStep1_Hopper() {
     if (btn == 1) {
       dir = !dir;
       startHopperMotor(dir);
-      SAFE_PRINT(F("  Direction switched -> "));
-      SAFE_PRINTLN(dir ? F("REVERSE") : F("FORWARD"));
+      SafeSerial.print(F("  Direction switched -> "));
+      SafeSerial.println(dir ? F("REVERSE") : F("FORWARD"));
     } else if (btn == 3) {
       stopHopperMotor();
-      SAFE_PRINTLN(F("  Motor stopped. Entering Calibration Mode..."));
+      SafeSerial.println(F("  Motor stopped. Entering Calibration Mode..."));
       return 4;
     } else {
       stopHopperMotor();
-      SAFE_PRINTLN(F("  Motor stopped. Advancing to next test..."));
+      SafeSerial.println(F("  Motor stopped. Advancing to next test..."));
       return 2;
     }
   }
@@ -968,33 +980,33 @@ int debugStep1_Hopper() {
 // Triple press                      : enter Calibration Mode
 // -----------------------------------------------------------------------------
 int debugStep2_ServoColor() {
-  SAFE_PRINTLN();
-  SAFE_PRINTLN(F("--- [DEBUG 2/3] Servo / Color Sensor Test ---"));
+  SafeSerial.println();
+  SafeSerial.println(F("--- [DEBUG 2/3] Servo / Color Sensor Test ---"));
 
   if (!tcs.begin()) {
-    SAFE_PRINTLN(F("  ERROR: TCS34725 not found! Cannot run this test."));
-    SAFE_PRINTLN(F("  Press button (any) to advance to next test."));
+    SafeSerial.println(F("  ERROR: TCS34725 not found! Cannot run this test."));
+    SafeSerial.println(F("  Press button (any) to advance to next test."));
     waitForButtonPress();
     return 3;
   }
 
-  SAFE_PRINTLN(F("  Loop running continuously. Results printed each cycle."));
-  SAFE_PRINTLN(F("  Single press : stop after current cycle"));
-  SAFE_PRINTLN(F("  Double press : next test (Stepper)"));
-  SAFE_PRINTLN(F("  Triple press : Calibration Mode"));
-  SAFE_PRINTLN(F("  (when stopped) Single press : restart | Double press : next test | Triple press : Calibration Mode"));
+  SafeSerial.println(F("  Loop running continuously. Results printed each cycle."));
+  SafeSerial.println(F("  Single press : stop after current cycle"));
+  SafeSerial.println(F("  Double press : next test (Stepper)"));
+  SafeSerial.println(F("  Triple press : Calibration Mode"));
+  SafeSerial.println(F("  (when stopped) Single press : restart | Double press : next test | Triple press : Calibration Mode"));
 
   bool running = true;
 
   while (true) {
     if (running) {
-      SAFE_PRINT(F("[Servo] FeedOut"));
+      SafeSerial.print(F("[Servo] FeedOut"));
       servoFeedOut();
       delay(500);
-      SAFE_PRINT(F("[Servo] FeedIn"));
+      SafeSerial.print(F("[Servo] FeedIn"));
       servoFeedIn();
       delay(500);
-      SAFE_PRINT(F("[Servo] WiggleIn"));
+      SafeSerial.print(F("[Servo] WiggleIn"));
       servoWiggleIn();
       delay(500);
       readColorSensor();
@@ -1004,12 +1016,12 @@ int debugStep2_ServoColor() {
       int btn = checkButton(300);
       if (btn == 1) {
         running = false;
-        SAFE_PRINTLN(F("  Loop stopped. Single=restart | Double=next test | Triple=Calib Mode."));
+        SafeSerial.println(F("  Loop stopped. Single=restart | Double=next test | Triple=Calib Mode."));
       } else if (btn == 3) {
-        SAFE_PRINTLN(F("  Entering Calibration Mode..."));
+        SafeSerial.println(F("  Entering Calibration Mode..."));
         return 4;
       } else if (btn == 2) {
-        SAFE_PRINTLN(F("  Advancing to Stepper test..."));
+        SafeSerial.println(F("  Advancing to Stepper test..."));
         return 3;
       }
     } else {
@@ -1017,12 +1029,12 @@ int debugStep2_ServoColor() {
       int btn = waitForButtonPress();
       if (btn == 1) {
         running = true;
-        SAFE_PRINTLN(F("  Loop restarted."));
+        SafeSerial.println(F("  Loop restarted."));
       } else if (btn == 3) {
-        SAFE_PRINTLN(F("  Entering Calibration Mode..."));
+        SafeSerial.println(F("  Entering Calibration Mode..."));
         return 4;
       } else {
-        SAFE_PRINTLN(F("  Advancing to Stepper test..."));
+        SafeSerial.println(F("  Advancing to Stepper test..."));
         return 3;
       }
     }
@@ -1038,24 +1050,24 @@ int debugStep2_ServoColor() {
 // Triple press                : enter Calibration Mode
 // -----------------------------------------------------------------------------
 int debugStep3_Stepper() {
-  SAFE_PRINTLN();
-  SAFE_PRINTLN(F("--- [DEBUG 3/3] Stepper Test ---"));
-  SAFE_PRINTLN(F("  Single press during move       : stop"));
-  SAFE_PRINTLN(F("  Single press when stopped      : save position as 0, restart cycle"));
-  SAFE_PRINTLN(F("  Double press (any time)        : back to Hopper Motor test"));
-  SAFE_PRINTLN(F("  Triple press (any time)        : Calibration Mode"));
+  SafeSerial.println();
+  SafeSerial.println(F("--- [DEBUG 3/3] Stepper Test ---"));
+  SafeSerial.println(F("  Single press during move       : stop"));
+  SafeSerial.println(F("  Single press when stopped      : save position as 0, restart cycle"));
+  SafeSerial.println(F("  Double press (any time)        : back to Hopper Motor test"));
+  SafeSerial.println(F("  Triple press (any time)        : Calibration Mode"));
 
   while (true) {
     stepper.setCurrentPosition(0);
     bool interrupted = false;
 
     // Full 360 turn, then return to home
-    SAFE_PRINTLN(F("  Starting full 360 turn..."));
+    SafeSerial.println(F("  Starting full 360 turn..."));
     if (!runStepperTo(stepperStepsPerRot * stepperMicroStepping)) {
       interrupted = true;
     } else {
       delay(500);
-      SAFE_PRINTLN(F("  Returning to slot 0..."));
+      SafeSerial.println(F("  Returning to slot 0..."));
       if (!runStepperTo(0)) {
         interrupted = true;
       }
@@ -1063,11 +1075,11 @@ int debugStep3_Stepper() {
 
     if (!interrupted) {
       delay(500);
-      SAFE_PRINTLN(F("  360 turn done. Starting slot cycle..."));
+      SafeSerial.println(F("  360 turn done. Starting slot cycle..."));
 
       for (int slot = 0; slot < numContainerSlots && !interrupted; slot++) {
-        SAFE_PRINT(F("  -> Slot ")); SAFE_PRINT(slot);
-        SAFE_PRINT(F(" (step pos ")); SAFE_PRINT(slot * stepperMulti); SAFE_PRINTLN(')');
+        SafeSerial.print(F("  -> Slot ")); SafeSerial.print(slot);
+        SafeSerial.print(F(" (step pos ")); SafeSerial.print(slot * stepperMulti); SafeSerial.println(')');
 
         if (!runStepperTo(slot * stepperMulti)) {
           interrupted = true;
@@ -1079,52 +1091,52 @@ int debugStep3_Stepper() {
         if (btn == 1) {
           interrupted = true;
         } else if (btn == 3) {
-          SAFE_PRINTLN(F("  Entering Calibration Mode..."));
+          SafeSerial.println(F("  Entering Calibration Mode..."));
           return 4;
         } else if (btn == 2) {
-          SAFE_PRINTLN(F("  Returning to Hopper Motor test..."));
+          SafeSerial.println(F("  Returning to Hopper Motor test..."));
           return 1;
         }
       }
 
       // Return to slot 0 after visiting all slots
       if (!interrupted) {
-        SAFE_PRINTLN(F("  Slot cycle done. Returning to slot 0..."));
+        SafeSerial.println(F("  Slot cycle done. Returning to slot 0..."));
         runStepperTo(0);
         delay(500);
       }
     }
 
     if (interrupted) {
-      SAFE_PRINTLN(F("  Movement stopped."));
-      SAFE_PRINTLN(F("  Single press : save position as 0, restart cycle"));
-      SAFE_PRINTLN(F("  Double press : back to Hopper Motor test"));
-      SAFE_PRINTLN(F("  Triple press : Calibration Mode"));
+      SafeSerial.println(F("  Movement stopped."));
+      SafeSerial.println(F("  Single press : save position as 0, restart cycle"));
+      SafeSerial.println(F("  Double press : back to Hopper Motor test"));
+      SafeSerial.println(F("  Triple press : Calibration Mode"));
       int btn = waitForButtonPress();
       if (btn == 1) {
         stepper.setCurrentPosition(0);
-        SAFE_PRINTLN(F("  Position saved as 0. Restarting cycle..."));
+        SafeSerial.println(F("  Position saved as 0. Restarting cycle..."));
         // continue while(true) -> restart
       } else if (btn == 3) {
-        SAFE_PRINTLN(F("  Entering Calibration Mode..."));
+        SafeSerial.println(F("  Entering Calibration Mode..."));
         return 4;
       } else {
-        SAFE_PRINTLN(F("  Returning to Hopper Motor test..."));
+        SafeSerial.println(F("  Returning to Hopper Motor test..."));
         return 1;
       }
     } else {
       // Full cycle completed normally
-      SAFE_PRINTLN(F("  Slot cycle complete!"));
-      SAFE_PRINTLN(F("  Single press : restart from 0 | Double press : back to Hopper Motor test | Triple press : Calibration Mode"));
+      SafeSerial.println(F("  Slot cycle complete!"));
+      SafeSerial.println(F("  Single press : restart from 0 | Double press : back to Hopper Motor test | Triple press : Calibration Mode"));
       int btn = waitForButtonPress();
       if (btn == 1) {
-        SAFE_PRINTLN(F("  Restarting cycle..."));
+        SafeSerial.println(F("  Restarting cycle..."));
         // continue while(true) -> restart
       } else if (btn == 3) {
-        SAFE_PRINTLN(F("  Entering Calibration Mode..."));
+        SafeSerial.println(F("  Entering Calibration Mode..."));
         return 4;
       } else {
-        SAFE_PRINTLN(F("  Returning to Hopper Motor test..."));
+        SafeSerial.println(F("  Returning to Hopper Motor test..."));
         return 1;
       }
     }
@@ -1144,16 +1156,16 @@ int debugStep3_Stepper() {
  * Returns the next calibration step number, or -1 to exit calibration mode.
  */
 int calibStep1_Servo() {
-  SAFE_PRINTLN();
-  SAFE_PRINTLN(F("--- [CALIB 1] Servo Calibration ---"));
-  SAFE_PRINTLN(F("  Single press : Out -> In -> WiggleIn -> Out -> ..."));
-  SAFE_PRINTLN(F("  Double press : next calibration step"));
-  SAFE_PRINTLN(F("  Triple press : back to Debug Mode"));
+  SafeSerial.println();
+  SafeSerial.println(F("--- [CALIB 1] Servo Calibration ---"));
+  SafeSerial.println(F("  Single press : Out -> In -> WiggleIn -> Out -> ..."));
+  SafeSerial.println(F("  Double press : next calibration step"));
+  SafeSerial.println(F("  Triple press : back to Debug Mode"));
 
   // state 0=Out, 1=In, 2=WiggleIn
   int state = 0;
   servo.write(servoAngleOut);
-  SAFE_PRINT(F("  Servo -> OUT (angle ")); SAFE_PRINT(servoAngleOut); SAFE_PRINTLN(')');
+  SafeSerial.print(F("  Servo -> OUT (angle ")); SafeSerial.print(servoAngleOut); SafeSerial.println(')');
 
   while (true) {
     int btn = waitForButtonPress();
@@ -1161,18 +1173,18 @@ int calibStep1_Servo() {
       state = (state + 1) % 3;
       if (state == 0) {
         servo.write(servoAngleOut);
-        SAFE_PRINT(F("  Servo -> OUT (angle "));
-        SAFE_PRINT(servoAngleOut);
-        SAFE_PRINTLN(')');
+        SafeSerial.print(F("  Servo -> OUT (angle "));
+        SafeSerial.print(servoAngleOut);
+        SafeSerial.println(')');
       } else if (state == 1) {
         servo.write(servoAngleIn);
-        SAFE_PRINT(F("  Servo -> IN  (angle "));
-        SAFE_PRINT(servoAngleIn);
-        SAFE_PRINTLN(')');
+        SafeSerial.print(F("  Servo -> IN  (angle "));
+        SafeSerial.print(servoAngleIn);
+        SafeSerial.println(')');
       } else {
-        SAFE_PRINTLN(F("  Servo -> WiggleIn"));
+        SafeSerial.println(F("  Servo -> WiggleIn"));
         servoWiggleIn();
-        SAFE_PRINTLN(F("  WiggleIn done."));
+        SafeSerial.println(F("  WiggleIn done."));
       }
     } else if (btn == 2) {
       return 2;   // advance to next calibration step
@@ -1187,13 +1199,13 @@ int calibStep1_Servo() {
  * Runs calibration steps in sequence; returns when triple press exits to debug.
  */
 void runCalibrationMode() {
-  SAFE_PRINTLN();
-  SAFE_PRINTLN(F("*************************************"));
-  SAFE_PRINTLN(F("*       CALIBRATION MODE            *"));
-  SAFE_PRINTLN(F("*  Single press : action            *"));
-  SAFE_PRINTLN(F("*  Double press : next calib step   *"));
-  SAFE_PRINTLN(F("*  Triple press : back to Debug     *"));
-  SAFE_PRINTLN(F("*************************************"));
+  SafeSerial.println();
+  SafeSerial.println(F("*************************************"));
+  SafeSerial.println(F("*       CALIBRATION MODE            *"));
+  SafeSerial.println(F("*  Single press : action            *"));
+  SafeSerial.println(F("*  Double press : next calib step   *"));
+  SafeSerial.println(F("*  Triple press : back to Debug     *"));
+  SafeSerial.println(F("*************************************"));
 
   int step = 1;
   while (true) {
@@ -1203,11 +1215,11 @@ void runCalibrationMode() {
       default: next = -1; break;
     }
     if (next == -1) {
-      SAFE_PRINTLN(F("  Exiting Calibration Mode -> back to Debug Mode."));
+      SafeSerial.println(F("  Exiting Calibration Mode -> back to Debug Mode."));
       return;
     }
     // No further calibration steps defined yet — wrap back to step 1
-    SAFE_PRINTLN(F("  No further calibration steps. Returning to step 1."));
+    SafeSerial.println(F("  No further calibration steps. Returning to step 1."));
     step = 1;
   }
 }
@@ -1224,13 +1236,13 @@ void runInteractiveDebug() {
   while (digitalRead(setupPin) == HIGH) {}
   delay(100);
 
-  SAFE_PRINTLN();
-  SAFE_PRINTLN(F("*************************************"));
-  SAFE_PRINTLN(F("*    INTERACTIVE DEBUG MODE         *"));
-  SAFE_PRINTLN(F("*  Single press : action in test    *"));
-  SAFE_PRINTLN(F("*  Double press : next / prev test  *"));
-  SAFE_PRINTLN(F("*  Triple press : Calibration Mode  *"));
-  SAFE_PRINTLN(F("*************************************"));
+  SafeSerial.println();
+  SafeSerial.println(F("*************************************"));
+  SafeSerial.println(F("*    INTERACTIVE DEBUG MODE         *"));
+  SafeSerial.println(F("*  Single press : action in test    *"));
+  SafeSerial.println(F("*  Double press : next / prev test  *"));
+  SafeSerial.println(F("*  Triple press : Calibration Mode  *"));
+  SafeSerial.println(F("*************************************"));
 
   int step = 1;
   while (true) {
