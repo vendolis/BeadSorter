@@ -119,8 +119,8 @@ static const GainRow GAINS[] = {
 };
 static const int NUM_GAINS = (int)(sizeof(GAINS) / sizeof(GAINS[0]));
 
-// Null scan uses 16x (index 2 in GAINS) — same gain used during setup calibration.
-static const int NULL_SCAN_GAIN_IDX = 2;
+// Null scan uses 60x (index 3 in GAINS) — same gain used during setup calibration.
+static const int NULL_SCAN_GAIN_IDX = 3;
 
 // Saturation warning threshold (same 16-bit space as raw counts).
 static const uint16_t SAT_THRESH = 60000;
