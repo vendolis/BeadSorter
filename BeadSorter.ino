@@ -88,13 +88,16 @@ Adafruit_TCS34725 tcs = Adafruit_TCS34725(SENSOR_INTEGRATION_TIME, SENSOR_GAIN);
 // All values are in the 0..1 range (the ColorConverterLib normalises H, S, L to 0..1).
 // H wraps around (0 == 1 == red), so the comparison uses circular distance.
 //
-// Values below are set to half the minimum inter-bead gap measured during calibration
-// (BeadCalibration_20260313_improved.csv, g16x, analyse_beads.py).
-// These are the tightest values that avoid confusing any two bead colours.
-// If beads fail to match themselves (too many unknowns), loosen them by 2-3×.
-float thresholdH = 0.0002;  // hue tolerance
-float thresholdS = 0.0011;  // saturation tolerance
-float thresholdL = 0.0003;  // lightness tolerance
+// Values below are based on the maximum intra-bead sample spread measured during
+// calibration (BeadCalibration_20260313_improved.csv, g16x, 29 beads, 10 wiggle
+// positions each, analysed with analyse_beads.py).
+// Each threshold is set just above the worst-case spread for that channel so that
+// all wiggle-position readings of the same bead land in the same bucket.
+// Note: beads 4 and 14 in the calibration set are too similar to separate reliably
+// at this sensor resolution; they will merge into one bin.
+float thresholdH = 0.030;  // hue tolerance       (max spread 0.0255, bead 12)
+float thresholdS = 0.025;  // saturation tolerance (max spread 0.0224, bead 1)
+float thresholdL = 0.014;  // lightness tolerance  (max spread 0.0116, bead 1)
 
 // Null-scan window: maximum deviation from empty-tube reference in each channel.
 float nullScanOffsetH = 0.07;

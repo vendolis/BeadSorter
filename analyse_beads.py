@@ -292,6 +292,208 @@ def suggest_chroma_threshold(means: dict) -> float:
     return min_d / 2.0
 
 
+# ── Keep-together / keep-apart feasibility ───────────────────────────────────
+
+def compute_hsl_deviations(rows: list, gain: str, means: dict) -> dict:
+    """
+    For each bead, compute the maximum per-channel deviation of any individual
+    sample from the bead's computed mean (H circular, S/L linear).
+
+    This is the MINIMUM threshold required to keep all readings of the same
+    bead in the same bucket.
+
+    Returns {bead: {'dH': float, 'dS': float, 'dL': float}}.
+    """
+    filtered = [r for r in rows if r["gain"] == gain and not r["sat"]]
+    by_bead = collections.defaultdict(list)
+    for r in filtered:
+        by_bead[r["bead"]].append(r)
+
+    devs = {}
+    for bead, rs in by_bead.items():
+        if bead not in means:
+            continue
+        m = means[bead]
+        devs[bead] = {
+            "dH": max(hue_dist(r["H"], m["H"]) for r in rs),
+            "dS": max(abs(r["S"]  - m["S"])     for r in rs),
+            "dL": max(abs(r["L"]  - m["L"])     for r in rs),
+        }
+    return devs
+
+
+def compute_chroma2_deviations(rows: list, gain: str, means: dict) -> dict:
+    """
+    For each bead, compute the maximum 2-D chromaticity distance of any
+    individual sample from the bead's mean.
+
+    Returns {bead: float}.
+    """
+    filtered = [r for r in rows if r["gain"] == gain and not r["sat"]]
+    by_bead = collections.defaultdict(list)
+    for r in filtered:
+        by_bead[r["bead"]].append(r)
+
+    devs = {}
+    for bead, rs in by_bead.items():
+        if bead not in means:
+            continue
+        m = means[bead]
+        devs[bead] = max(dist_chroma2(r, m) for r in rs)
+    return devs
+
+
+def hsl_classification_analysis(means: dict, hsl_devs: dict) -> None:
+    """
+    Print the keep-together / keep-apart feasibility table for HSL.
+
+    For each channel Ch independently, and for each bead:
+      spread_Ch   = max deviation of samples from the bead's own mean
+                    → threshold must be ≥ this to keep the bead together
+      margin_Ch   = distance to nearest neighbour in channel Ch
+                    → threshold must be < margin_Ch/2 so the neighbour
+                      does not accidentally match
+
+    Because BeadSorter uses AND-logic (all channels must match), a bead pair
+    can be separated by ANY single channel.  So the "effective margin" for a
+    pair is the channel with the LARGEST effective gap:
+      effective_gap(X,Y) = max over Ch of (|mean_X_Ch - mean_Y_Ch|
+                                           - spread_X_Ch - spread_Y_Ch)
+
+    If effective_gap > 0 for at least one channel, the pair is separable.
+    """
+    beads = sorted(means.keys())
+    if not beads:
+        return
+
+    # ── Per-channel global summary ──────────────────────────────────────────
+    channels = [
+        ("H", lambda a, b: hue_dist(a["H"], b["H"])),
+        ("S", lambda a, b: abs(a["S"] - b["S"])),
+        ("L", lambda a, b: abs(a["L"] - b["L"])),
+    ]
+
+    print("\n  HSL per-channel threshold feasibility:")
+    print(f"    {'Ch':2s}  {'min_T (spread)':>16s}  {'max_T (gap/2)':>14s}  "
+          f"{'recommended':>12s}  status")
+    sep()
+    for ch_name, gap_fn in channels:
+        dev_key = f"d{ch_name}"
+        # min_T: the bead with the largest spread drives the lower bound
+        worst_b = max((b for b in hsl_devs if b in means),
+                      key=lambda b: hsl_devs[b][dev_key], default=None)
+        min_T = hsl_devs[worst_b][dev_key] if worst_b else 0.0
+
+        # max_T: half the smallest inter-bead gap in this channel
+        min_gap = min(gap_fn(means[a], means[b])
+                      for a, b in itertools.combinations(beads, 2))
+        max_T = min_gap / 2.0
+
+        if min_T < max_T:
+            rec = (min_T + max_T) / 2.0
+            status = "OK"
+        elif min_T == 0.0:
+            rec = max_T * 0.5
+            status = "OK (no spread)"
+        else:
+            rec = float("nan")
+            status = "INFEASIBLE"
+        rec_str = f"{rec:.5f}" if not math.isnan(rec) else "   n/a"
+        worst_str = f"(bead {worst_b})" if worst_b else ""
+        print(f"    {ch_name:2s}  {min_T:>14.5f}  "
+              f"{max_T:>14.5f}  {rec_str:>12s}  {status}  {worst_str}")
+
+    # ── Per-bead-pair effective margin (AND-logic) ───────────────────────────
+    print(f"\n  Per-pair AND-logic effective margin  "
+          f"(positive = separable after accounting for spread):")
+    print(f"    {'Pair':>12s}  {'dH gap':>8s}  {'dS gap':>8s}  {'dL gap':>8s}  "
+          f"{'best gap':>9s}  status")
+    sep()
+    insep = []
+    for a, b in itertools.combinations(beads, 2):
+        dH_gap = hue_dist(means[a]["H"], means[b]["H"]) \
+                 - hsl_devs.get(a, {}).get("dH", 0) \
+                 - hsl_devs.get(b, {}).get("dH", 0)
+        dS_gap = abs(means[a]["S"] - means[b]["S"]) \
+                 - hsl_devs.get(a, {}).get("dS", 0) \
+                 - hsl_devs.get(b, {}).get("dS", 0)
+        dL_gap = abs(means[a]["L"] - means[b]["L"]) \
+                 - hsl_devs.get(a, {}).get("dL", 0) \
+                 - hsl_devs.get(b, {}).get("dL", 0)
+        best = max(dH_gap, dS_gap, dL_gap)
+        separable = best > 0
+        if not separable:
+            insep.append((a, b, best))
+        warn = "  ← INSEPARABLE" if not separable else \
+               ("  ← tight" if best < 0.005 else "")
+        # Only print tight or inseparable pairs to keep output manageable
+        if best < 0.015 or not separable:
+            print(f"    {a:>5d} vs {b:>3d}  {dH_gap:>8.4f}  {dS_gap:>8.4f}  "
+                  f"{dL_gap:>8.4f}  {best:>9.4f}{warn}")
+
+    if insep:
+        print(f"\n  !! {len(insep)} inseparable pair(s) in HSL — "
+              f"no threshold can distinguish them reliably.")
+    else:
+        print(f"\n  All HSL pairs have at least one channel with positive margin.")
+
+
+def chroma2_classification_analysis(means: dict, chroma_devs: dict) -> None:
+    """
+    Print keep-together / keep-apart feasibility for 2-D chromaticity.
+
+    For each bead pair (X, Y):
+      effective_gap = dist_chroma2(mean_X, mean_Y) - spread_X - spread_Y
+    If > 0, a single Euclidean threshold can separate them.
+    """
+    beads = sorted(means.keys())
+    if not beads:
+        return
+
+    worst_b = max((b for b in chroma_devs if b in means),
+                  key=lambda b: chroma_devs[b], default=None)
+    min_T = chroma_devs[worst_b] if worst_b else 0.0
+    min_gap = min(dist_chroma2(means[a], means[b])
+                  for a, b in itertools.combinations(beads, 2))
+    max_T = min_gap / 2.0
+
+    if min_T < max_T:
+        rec = (min_T + max_T) / 2.0
+        status = "OK"
+    else:
+        rec = float("nan")
+        status = "INFEASIBLE"
+    rec_str = f"{rec:.5f}" if not math.isnan(rec) else "n/a"
+
+    print(f"\n  Chroma2 threshold feasibility:")
+    print(f"    min_T (max spread, bead {worst_b}): {min_T:.5f}")
+    print(f"    max_T (min inter-bead gap / 2):   {max_T:.5f}")
+    print(f"    recommended threshold:            {rec_str}   [{status}]")
+
+    print(f"\n  Per-pair Chroma2 effective margin:")
+    print(f"    {'Pair':>12s}  {'inter dist':>10s}  {'spread X':>9s}  "
+          f"{'spread Y':>9s}  {'eff. gap':>9s}  status")
+    sep()
+    insep = []
+    for a, b in itertools.combinations(beads, 2):
+        inter = dist_chroma2(means[a], means[b])
+        sp_a  = chroma_devs.get(a, 0.0)
+        sp_b  = chroma_devs.get(b, 0.0)
+        eff   = inter - sp_a - sp_b
+        if eff <= 0:
+            insep.append((a, b, eff))
+        warn = "  ← INSEPARABLE" if eff <= 0 else \
+               ("  ← tight" if eff < 0.005 else "")
+        if eff < 0.015 or eff <= 0:
+            print(f"    {a:>5d} vs {b:>3d}  {inter:>10.5f}  {sp_a:>9.5f}  "
+                  f"{sp_b:>9.5f}  {eff:>9.5f}{warn}")
+
+    if insep:
+        print(f"\n  !! {len(insep)} inseparable pair(s) in Chroma2.")
+    else:
+        print(f"\n  All Chroma2 pairs have positive effective margin.")
+
+
 # ── Formatting helpers ────────────────────────────────────────────────────────
 
 def sep(char="─", width=62):
@@ -420,14 +622,33 @@ def main():
             snr_str = f"  SNR={pair_snr:.1f}" if not math.isnan(pair_snr) else ""
             print(f"    beads {ba:3d} vs {bb:3d}  dist = {dist:.5f}{snr_str}{warn}")
 
-        # ── 2e. Threshold suggestions ─────────────────────────────────────────
+        # ── 2e. Threshold suggestions (inter-bead only — upper bound) ─────────
         thH, thS, thL = suggest_hsl_thresholds(means)
         thCh = suggest_chroma_threshold(means)
-        print(f"\n  Suggested thresholds for BeadSorter.ino  (half the min inter-bead gap):")
+        print(f"\n  Inter-bead upper-bound thresholds  (half the min per-channel gap):")
         print(f"    HSL:       thresholdH = {thH:.4f}  "
               f"thresholdS = {thS:.4f}  thresholdL = {thL:.4f}")
-        print(f"    Chroma2:   threshold  = {thCh:.4f}  "
-              f"(Euclidean distance in chroma_r / chroma_g plane)")
+        print(f"    Chroma2:   threshold  = {thCh:.4f}")
+        print(f"  NOTE: these are the TIGHTEST permissible thresholds (upper bound).")
+        print(f"  They may be smaller than the intra-bead spread — see section below.")
+
+        # ── 2f. Keep-together / keep-apart feasibility ────────────────────────
+        sep("═")
+        print(f"CLASSIFICATION FEASIBILITY  (gain: {gain})")
+        print(f"  For each channel/space the threshold must satisfy:")
+        print(f"    min_T  = max intra-bead sample spread   (keep same bead together)")
+        print(f"    max_T  = half min inter-bead mean gap   (keep different beads apart)")
+        print(f"  A feasible threshold exists only when min_T < max_T.")
+        print(f"  The AND-logic of BeadSorter means ONE channel gap is enough to")
+        print(f"  separate a pair — so per-pair effective margin uses the best channel.")
+        sep("═")
+
+        hsl_devs    = compute_hsl_deviations(rows, gain, means)
+        chroma_devs = compute_chroma2_deviations(rows, gain, means)
+
+        hsl_classification_analysis(means, hsl_devs)
+        print()
+        chroma2_classification_analysis(means, chroma_devs)
         print()
 
     # ── 3. Cross-gain comparison ───────────────────────────────────────────────
