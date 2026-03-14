@@ -103,7 +103,7 @@ float thresholdL = 0.010;// 0.014;  // lightness tolerance  (max spread 0.0116, 
 float nullScanOffsetH = 0.004;
 float nullScanOffsetS = 0.006;
 float nullScanOffsetL = 0.004;
-float nullScanOffsetC = 150;
+uint16_t nullScanOffsetC = 150;
 
 Servo servo;
 AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
@@ -126,7 +126,7 @@ float storedColors[16][3] = {
 bool calibrateNullScan = true;
 // If calibrateNullScan=false, set these manually (H, S, L all 0..1).
 float nullScanHSL[3] = {0.0, 0.0, 0.0};
-uint16_t nullScanRAW[4] = {0.0, 0.0, 0.0};
+uint16_t nullScanRAW[4] = {0, 0, 0, 0};
 
 uint8_t  autoColorCounter = 0;
 uint16_t beadCounter = 0;
@@ -659,19 +659,25 @@ float colorDistanceHSL(float* c1, float* c2)
 boolean nullScan() {
   float dh = fabsf(resultHSL[0] - nullScanHSL[0]);
   if (dh > 0.5f) dh = 1.0f - dh;
-  return (dh                                         <= nullScanOffsetH) &&
-         (fabsf(resultHSL[1] - nullScanHSL[1])       <= nullScanOffsetS) &&
-         (fabsf(resultHSL[2] - nullScanHSL[2])       <= nullScanOffsetL);
+  return (dh                                                                     <= nullScanOffsetH) &&
+         (fabsf(resultHSL[1] - nullScanHSL[1])                                   <= nullScanOffsetS) &&
+         (fabsf(resultHSL[2] - nullScanHSL[2])                                   <= nullScanOffsetL) &&
+         (abs((int)resultRaw[3] - (int)nullScanRAW[3])                           <= nullScanOffsetC);
 }
 
 void setNullScanValues() {
   nullScanHSL[0] = resultHSL[0];
   nullScanHSL[1] = resultHSL[1];
   nullScanHSL[2] = resultHSL[2];
+  nullScanRAW[0] = resultRaw[0];
+  nullScanRAW[1] = resultRaw[1];
+  nullScanRAW[2] = resultRaw[2];
+  nullScanRAW[3] = resultRaw[3];
 
   Serial.print(F("Calib results H=")); Serial.print(nullScanHSL[0], 4);
   Serial.print(F(" S="));             Serial.print(nullScanHSL[1], 4);
-  Serial.print(F(" L="));             Serial.println(nullScanHSL[2], 4);
+  Serial.print(F(" L="));             Serial.print(nullScanHSL[2], 4);
+  Serial.print(F(" rawC="));          Serial.println(nullScanRAW[3]);
 }
 
 /*
