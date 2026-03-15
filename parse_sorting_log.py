@@ -50,11 +50,14 @@ def parse_beads(content, containers):
 
         cont_m  = re.search(r'container array: (\d+)', block)
         store_m = re.search(r'StoreColor (\d+)', block)
+        bin15_m = re.search(r'All sort slots full -> dumping to bin 15', block)
 
         if cont_m:
             container = int(cont_m.group(1))
         elif store_m:
             container = int(store_m.group(1))
+        elif bin15_m:
+            container = 15
         else:
             continue  # no container assignment found
 
