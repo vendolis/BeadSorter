@@ -740,7 +740,7 @@ void sortBeadToDynamicArray() {
   if (!found) {
     // Circular mean over all retry readings
     float sinSum = 0.0f, cosSum = 0.0f, sSum = 0.0f, lSum = 0.0f;
-    for (int j = 0; j < 4; j++) {
+    for (int j = 0; j < maxRetries; j++) {
       float rad = medianHSL[j][0] * 2.0f * (float)M_PI;
       sinSum += sinf(rad);
       cosSum += cosf(rad);
